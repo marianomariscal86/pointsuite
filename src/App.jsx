@@ -19,10 +19,32 @@ function getMaintYear(client, payments) {
   const paidThisYear = payments.some(p => p.type === "maintenance" && p.clientId === client.id && p.date && new Date(p.date).getFullYear() === CY);
   return paidThisYear ? CY + 1 : CY;
 }
-// Fecha de vencimiento de puntos según año de mantenimiento
-// Puntos del año N vencen el 31 de diciembre del año N
 function getMaintPointExpiry(maintYear) {
   return new Date(maintYear, 11, 31).toISOString().split("T")[0];
+}
+// Calcula todos los años de mantenimiento pendientes de pago para un cliente
+// Retorna array de {year, pts, montoMXN, paid (bool), partialPts} ordenado de más antiguo a más reciente
+function getMaintDesglose(client, payments, pp) {
+  if (!client || !client.contractDate) return [];
+  const startYear = new Date(client.contractDate).getFullYear();
+  const years = [];
+  // Obtener pagos de mantenimiento agrupados por año
+  const maintPayments = payments.filter(p => p.type === "maintenance" && p.clientId === client.id);
+  const paidByYear = {};
+  maintPayments.forEach(p => {
+    const yr = p.maintYear || new Date(p.date).getFullYear();
+    paidByYear[yr] = (paidByYear[yr] || 0) + (p.points || 0);
+  });
+  const annualPts = client.annualPoints || 0;
+  const montoAnual = Math.round(annualPts * pp);
+  // Iterar desde año de inicio hasta año actual
+  for (let yr = startYear; yr <= CY; yr++) {
+    const ptsPagados = paidByYear[yr] || 0;
+    const paid = ptsPagados >= annualPts;
+    const partial = ptsPagados > 0 && !paid;
+    years.push({ year: yr, pts: annualPts, montoMXN: montoAnual, ptsPagados, paid, partial, pendientePts: Math.max(0, annualPts - ptsPagados), pendienteMXN: Math.max(0, montoAnual - Math.round(ptsPagados * pp)) });
+  }
+  return years;
 }
 // Días hasta el próximo 31 de enero (fecha de asignación de puntos y vencimiento de los anteriores)
 // Días hasta el siguiente 1 de enero (fecha de asignación de puntos nuevos)
@@ -530,7 +552,13 @@ function SavePointsModal({ client, onSave, onClose, cu }) {
   </Modal>);
 }
 
-const PT = [{ v: "maintenance", l: "Mantenimiento anual", pts: true }, { v: "point_purchase", l: "Compra puntos (uso inmediato)", pts: true }, { v: "cancellation_payment", l: "Liquidación / cancelación contrato", pts: false }, { v: "moratorios", l: "Moratorios (intereses por mora)", pts: false }];
+const PT = [
+  { v: "maintenance", l: "Mantenimiento anual", pts: true },
+  { v: "prepago_maintenance", l: "Mantenimiento adelantado (Prepago)", pts: true },
+  { v: "point_purchase", l: "Compra puntos (uso inmediato)", pts: true },
+  { v: "cancellation_payment", l: "Liquidación / cancelación contrato", pts: false },
+  { v: "moratorios", l: "Moratorios (intereses por mora)", pts: false },
+];
 // Auto-elimina pagos pendientes de validación al final del día y promesas del mes sin cumplir
 function autoCleanup(pending, promises, setPending, setPromises) {
   const now = new Date(); const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
@@ -559,32 +587,39 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
 const preloadedMantAmt = client ? Math.round(client.annualPoints * pp) : 0;
 // MARKER_2026
 
-  // Auto-precargar monto cuando se selecciona un cliente prepago
+  // Auto-precargar monto y tipo cuando se selecciona un cliente
   useEffect(() => {
-    if (isPrepago && client && preloadedMantAmt > 0) {
+    if (!client) { setMantAmt(""); setMoraAmt(""); setPtype("maintenance"); return; }
+    if (isPrepago) {
+      setPtype("prepago_maintenance");
       setMantAmt(String(preloadedMantAmt));
-    } else if (!client) {
-      setMantAmt(""); setMoraAmt("");
+    } else {
+      setPtype("maintenance");
+      setMantAmt("");
     }
   }, [sid]); // eslint-disable-line
 
   const submit = () => {
     if (!client || (mantAmtN <= 0 && moraAmtN <= 0)) return;
-    // Descuentos calculados automáticamente (no ingresados por el gestor)
-    const saldoMXN = client.balance;
-    const moraMXN = interest;
-    const autoDiscMant = Math.max(0, saldoMXN - mantAmtN);
-    const autoDiscMora = Math.max(0, moraMXN - moraAmtN);
-    const exMant = autoDiscMant > saldoMXN * 0.20;
-    const exMora = autoDiscMora > moraMXN;
-    if (exMant || exMora) return; // Bloqueo por descuento excedido
+    const isPrepagoPay = ptype === "prepago_maintenance";
+    // Para prepago, no hay descuento sobre saldo (balance=0), se valida diferente
+    if (!isPrepagoPay) {
+      const saldoMXN = client.balance;
+      const moraMXN = interest;
+      const autoDiscMant = Math.max(0, saldoMXN - mantAmtN);
+      const autoDiscMora = Math.max(0, moraMXN - moraAmtN);
+      if (autoDiscMant > saldoMXN * 0.20 || autoDiscMora > moraMXN) return;
+    }
     const totalCobrar = mantAmtN + moraAmtN;
     const prop = {
       id: Date.now(), clientId: client.id, clientName: client.name, contractNo: client.contractNo,
-      ptype, mantAmt: mantAmtN, moraAmt: moraAmtN, mantDisc: autoDiscMant, moraDisc: autoDiscMora,
+      ptype: isPrepagoPay ? "maintenance" : ptype, // se guarda como maintenance para compatibilidad
+      mantAmt: mantAmtN, moraAmt: moraAmtN,
+      mantDisc: 0, moraDisc: 0,
       totalACobrar: totalCobrar, submittedBy: cu.username, submittedAt: new Date().toISOString(),
-      note, status: "Por Validar",
-      maintYear: maintYear, maintPointExpiry: maintPointExpiry, isPrepago
+      note: isPrepagoPay ? `[PREPAGO] Mantenimiento adelantado año ${maintYear}${note ? " — " + note : ""}` : note,
+      status: "Por Validar",
+      maintYear, maintPointExpiry, isPrepago: isPrepagoPay
     };
     setPendingPayments(ps => [...ps, prop]);
     setOk({ name: client.name, total: totalCobrar, id: prop.id });
@@ -711,18 +746,107 @@ const preloadedMantAmt = client ? Math.round(client.annualPoints * pp) : 0;
             <div style={{ fontSize: 9, color: T4, marginTop: 5 }}>TC: ${fx2} MXN/USD · <Bdg l={cls.l} /></div>
           </div>;
         })()}
-        <Inp label="Concepto" value={ptype} onChange={setPtype} opts={PT.map(t => ({ v: t.v, l: t.l }))} />
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-          <div>
-            <Inp label="Monto Mantenimiento a pagar (MXN $)" value={mantAmt} onChange={setMantAmt} type="number" />
-            {mantAmtN > 0 && <div style={{ fontSize: 9, color: T4, marginTop: 2 }}>≈ {fUSD(mantAmtN / (fxRate?.rate || 17.5))} USD</div>}
-            {mantAmtN > 0 && mantAmtN < mantAmtN * 0.8 && <div style={{ fontSize: 9, color: R, marginTop: 2 }}>⚠ El monto genera un descuento que excede el 20%</div>}
-          </div>
-          <div>
-            <Inp label="Monto Moratorios a pagar (MXN $)" value={moraAmt} onChange={setMoraAmt} type="number" />
-            {moraAmtN > 0 && <div style={{ fontSize: 9, color: T4, marginTop: 2 }}>≈ {fUSD(moraAmtN / (fxRate?.rate || 17.5))} USD</div>}
-          </div>
-        </div>
+        {/* Selector de concepto — prepago_maintenance solo visible para clientes en Promoción Prepago */}
+        <Inp
+          label="Concepto"
+          value={ptype}
+          onChange={v => { setPtype(v); if (v === "prepago_maintenance") setMantAmt(String(preloadedMantAmt)); else if (v !== "prepago_maintenance") setMantAmt(""); }}
+          opts={PT.filter(t => t.v !== "prepago_maintenance" || isPrepago).map(t => ({ v: t.v, l: t.l }))}
+        />
+
+        {/* Formulario especial para Mantenimiento Adelantado */}
+        {ptype === "prepago_maintenance" && client && (() => {
+          const fx2 = fxRate?.rate || 17.5;
+          const nextMaintYear = maintYear; // ya es CY+1 para prepago
+          const montoCompleto = Math.round(client.annualPoints * pp);
+          const montoUSD = (montoCompleto / fx2).toFixed(2);
+          return <div style={{ background: "#10b98112", border: "1px solid #10b98144", borderRadius: 8, padding: "12px 14px" }}>
+            <div style={{ fontSize: 11, fontWeight: 800, color: "#10b981", marginBottom: 10 }}>⭐ Mantenimiento Adelantado — Año {nextMaintYear}</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 10 }}>
+              <div style={{ background: BG3, borderRadius: 6, padding: "7px 9px" }}>
+                <div style={{ fontSize: 8, color: T4, textTransform: "uppercase", marginBottom: 2 }}>Año a pagar</div>
+                <div style={{ color: "#10b981", fontWeight: 800, fontSize: 14 }}>{nextMaintYear}</div>
+              </div>
+              <div style={{ background: BG3, borderRadius: 6, padding: "7px 9px" }}>
+                <div style={{ fontSize: 8, color: T4, textTransform: "uppercase", marginBottom: 2 }}>Puntos/año</div>
+                <div style={{ color: P, fontWeight: 700 }}>{fP(client.annualPoints)}</div>
+              </div>
+              <div style={{ background: BG3, borderRadius: 6, padding: "7px 9px" }}>
+                <div style={{ fontSize: 8, color: T4, textTransform: "uppercase", marginBottom: 2 }}>Pts vencen</div>
+                <div style={{ color: Y, fontWeight: 700, fontSize: 10 }}>{maintPointExpiry}</div>
+              </div>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+              <div style={{ background: BG3, borderRadius: 6, padding: "7px 9px" }}>
+                <div style={{ fontSize: 8, color: T4, textTransform: "uppercase", marginBottom: 2 }}>Monto MXN</div>
+                <div style={{ color: G, fontWeight: 800, fontSize: 13 }}>{fMXN(montoCompleto)}</div>
+              </div>
+              <div style={{ background: BG3, borderRadius: 6, padding: "7px 9px" }}>
+                <div style={{ fontSize: 8, color: T4, textTransform: "uppercase", marginBottom: 2 }}>Equivalente USD</div>
+                <div style={{ color: B, fontWeight: 700 }}>USD ${montoUSD}</div>
+                <div style={{ fontSize: 8, color: T4 }}>TC: ${fx2}</div>
+              </div>
+            </div>
+            <div style={{ fontSize: 9, color: "#10b981", marginBottom: 8 }}>
+              ✓ Los {fP(client.annualPoints)} estarán disponibles <b>inmediatamente</b> para hacer reservaciones y vencerán el <b>{maintPointExpiry}</b>.
+            </div>
+            <Inp label={`Monto a cobrar (MXN $) — Mantenimiento Año ${nextMaintYear}`} value={mantAmt} onChange={setMantAmt} type="number" />
+            {mantAmtN > 0 && mantAmtN !== montoCompleto && <div style={{ fontSize: 9, color: Y, marginTop: 3 }}>
+              ⚠ El monto completo es {fMXN(montoCompleto)}. Si cobras menos, se aplicará como pago parcial.
+            </div>}
+          </div>;
+        })()}
+
+        {/* Formulario normal para otros conceptos */}
+        {ptype !== "prepago_maintenance" && (() => {
+          const desglose = getMaintDesglose(client, payments, pp);
+          const pendientes = desglose.filter(d => !d.paid);
+          const fx2 = fxRate?.rate || 17.5;
+          return <>
+            {/* Desglose de mantenimientos pendientes — solo si hay más de uno o hay años anteriores sin pagar */}
+            {client && pendientes.length > 0 && <div style={{ background: BG3, border: `1px solid ${pendientes.length > 1 ? R : Y}33`, borderRadius: 8, padding: "10px 12px" }}>
+              <div style={{ fontSize: 9, color: pendientes.length > 1 ? R : Y, textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 8, fontWeight: 700 }}>
+                {pendientes.length > 1 ? `⚠ ${pendientes.length} años de mantenimiento pendientes` : "📅 Mantenimiento pendiente"}
+              </div>
+              {desglose.map(d => (
+                <div key={d.year} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", borderBottom: `1px solid ${BD}`, opacity: d.paid ? 0.4 : 1 }}>
+                  <div style={{ width: 42, flexShrink: 0 }}>
+                    <span style={{ background: d.paid ? G + "20" : d.partial ? Y + "20" : R + "20", color: d.paid ? G : d.partial ? Y : R, border: `1px solid ${d.paid ? G : d.partial ? Y : R}44`, borderRadius: 4, padding: "1px 5px", fontSize: 9, fontWeight: 700 }}>
+                      {d.year}
+                    </span>
+                  </div>
+                  <div style={{ flex: 1, fontSize: 10 }}>
+                    <span style={{ color: T3 }}>{fP(d.pts)}</span>
+                    {d.partial && <span style={{ color: Y, fontSize: 9, marginLeft: 6 }}>Parcial: {fP(d.ptsPagados)} pagados</span>}
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    {d.paid
+                      ? <span style={{ color: G, fontSize: 10, fontWeight: 700 }}>✓ Pagado</span>
+                      : <div>
+                          <div style={{ color: d.partial ? Y : R, fontWeight: 700, fontSize: 10 }}>{fMXN(d.pendienteMXN)}</div>
+                          <div style={{ color: T4, fontSize: 8 }}>{fUSD(d.pendienteMXN / fx2)}</div>
+                        </div>
+                    }
+                  </div>
+                </div>
+              ))}
+              {pendientes.length > 1 && <div style={{ marginTop: 7, padding: "5px 8px", background: R + "12", borderRadius: 5 }}>
+                <div style={{ fontSize: 9, color: R, fontWeight: 700 }}>Total pendiente: {fMXN(pendientes.reduce((a, d) => a + d.pendienteMXN, 0))} · {fUSD(pendientes.reduce((a, d) => a + d.pendienteMXN, 0) / fx2)}</div>
+                <div style={{ fontSize: 8, color: T4, marginTop: 2 }}>El pago se aplicará al año más antiguo primero.</div>
+              </div>}
+            </div>}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <div>
+                <Inp label="Monto Mantenimiento a pagar (MXN $)" value={mantAmt} onChange={setMantAmt} type="number" />
+                {mantAmtN > 0 && <div style={{ fontSize: 9, color: T4, marginTop: 2 }}>≈ {fUSD(mantAmtN / fx2)} USD</div>}
+              </div>
+              <div>
+                <Inp label="Monto Moratorios a pagar (MXN $)" value={moraAmt} onChange={setMoraAmt} type="number" />
+                {moraAmtN > 0 && <div style={{ fontSize: 9, color: T4, marginTop: 2 }}>≈ {fUSD(moraAmtN / fx2)} USD</div>}
+              </div>
+            </div>
+          </>;
+        })()}
         {(mantAmtN > 0 || moraAmtN > 0) && client && (() => {
           const saldoMXN = client.balance;
           const moraMXN = interest;
@@ -751,7 +875,7 @@ const preloadedMantAmt = client ? Math.round(client.annualPoints * pp) : 0;
         })()}
         <Inp label="Notas" value={note} onChange={setNote} />
       </div>
-      {mantAmtN + moraAmtN > 0 && client && (() => {
+      {mantAmtN + moraAmtN > 0 && client && ptype !== "prepago_maintenance" && (() => {
         const saldoMXN = client.balance;
         const moraMXN = interest;
         const descMant2 = Math.max(0, saldoMXN - mantAmtN);
@@ -769,7 +893,16 @@ const preloadedMantAmt = client ? Math.round(client.annualPoints * pp) : 0;
           {(exMant2 || exMora2) && <div style={{ color: R, fontSize: 10, fontWeight: 700 }}>⛔ No se puede enviar a caja: el descuento excede el máximo permitido. Aumenta el monto a cobrar.</div>}
         </div>;
       })()}
+      {mantAmtN > 0 && client && ptype === "prepago_maintenance" && <div style={{ margin: "10px 0", padding: "10px", background: "#10b98112", borderRadius: 7, border: "1px solid #10b98133" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 6 }}>
+          {[["A cobrar MXN", fMXN(mantAmtN), G], ["Año pagado", String(maintYear), "#10b981"], ["Pts disponibles hasta", maintPointExpiry, Y]].map(([l, v, c]) => (<div key={l}><div style={{ fontSize: 8, color: T4, textTransform: "uppercase" }}>{l}</div><div style={{ color: c, fontWeight: 700, fontSize: 11 }}>{v}</div></div>))}
+        </div>
+      </div>}
       {(() => {
+        const isPrepagoPay = ptype === "prepago_maintenance";
+        if (isPrepagoPay) {
+          return <Btn label={`⭐ Enviar Prepago Año ${maintYear} a Caja`} variant="success" onClick={submit} disabled={!client || mantAmtN <= 0} />;
+        }
         const saldoMXN = client?.balance || 0;
         const moraMXN = interest;
         const descMant2 = Math.max(0, saldoMXN - mantAmtN);
