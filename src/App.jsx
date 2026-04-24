@@ -13,6 +13,17 @@ const TODAY = new Date(), CY = TODAY.getFullYear(), TOD = TODAY.toISOString().sp
 function dOvr(ds) { if (!ds) return 0; return Math.floor((TODAY - new Date(ds)) / 86400000); }
 function cDel(d) { if (d <= 0) return { l: "Al corriente", c: G, r: 0 }; if (d <= 30) return { l: "1–30 días", c: "#a3e635", r: 0.5 }; if (d <= 60) return { l: "31–60 días", c: Y, r: 1 }; if (d <= 90) return { l: "61–90 días", c: O, r: 1.5 }; if (d <= 180) return { l: "91–180 días", c: R, r: 2 }; return { l: "+180 días", c: "#dc2626", r: 2.5 }; }
 function cInt(bal, d, r) { if (bal <= 0 || d <= 0) return 0; return bal * (r / 100) * (d / 365); }
+// Determina el año de mantenimiento pendiente de pago para un cliente
+// Regla: si ya pagó este año → año siguiente (prepago). Si no → año en curso.
+function getMaintYear(client, payments) {
+  const paidThisYear = payments.some(p => p.type === "maintenance" && p.clientId === client.id && p.date && new Date(p.date).getFullYear() === CY);
+  return paidThisYear ? CY + 1 : CY;
+}
+// Fecha de vencimiento de puntos según año de mantenimiento
+// Puntos del año N vencen el 31 de diciembre del año N
+function getMaintPointExpiry(maintYear) {
+  return new Date(maintYear, 11, 31).toISOString().split("T")[0];
+}
 // Días hasta el próximo 31 de enero (fecha de asignación de puntos y vencimiento de los anteriores)
 // Días hasta el siguiente 1 de enero (fecha de asignación de puntos nuevos)
 function daysToNextRenewal() { const next = new Date(CY + 1, 0, 1); return Math.floor((next - TODAY) / 86400000); }
@@ -541,6 +552,13 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
   const cls = cDelEx(client?.balance || 0, d);
   const interest = client ? cInt(client.balance, d, cls.r * 12) : 0;
   const mantAmtN = +mantAmt || 0, moraAmtN = +moraAmt || 0;
+  // Año de mantenimiento a pagar para el cliente seleccionado
+  const maintYear = client ? getMaintYear(client, payments) : CY;
+  const isPrepago = client ? (cls.l === "Promoción Prepago" || maintYear === CY + 1) : false;
+  const maintPointExpiry = getMaintPointExpiry(maintYear);
+  // Si es prepago, precargar el monto automáticamente cuando se selecciona el cliente
+  const preloadedMantAmt = isPrepago && client ? String(Math.round(client.annualPoints * pp)) : "";
+
   const submit = () => {
     if (!client || (mantAmtN <= 0 && moraAmtN <= 0)) return;
     // Descuentos calculados automáticamente (no ingresados por el gestor)
@@ -556,7 +574,8 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
       id: Date.now(), clientId: client.id, clientName: client.name, contractNo: client.contractNo,
       ptype, mantAmt: mantAmtN, moraAmt: moraAmtN, mantDisc: autoDiscMant, moraDisc: autoDiscMora,
       totalACobrar: totalCobrar, submittedBy: cu.username, submittedAt: new Date().toISOString(),
-      note, status: "Por Validar"
+      note, status: "Por Validar",
+      maintYear: maintYear, maintPointExpiry: maintPointExpiry, isPrepago
     };
     setPendingPayments(ps => [...ps, prop]);
     setOk({ name: client.name, total: totalCobrar, id: prop.id });
@@ -577,9 +596,10 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
       discountMant: pp2.mantDisc, discountMora: pp2.moraDisc,
       note: `[${pp2.ptype}] ${pp2.note}`, status: "Liquidado",
       processedBy: pp2.submittedBy, processedByCajero: cu.username,
-      type: pp2.ptype,
-      fxRate: fxRate.rate,
-      // Comisiones por concepto: mantenimiento tiene tasa distinta a moratorios
+      type: pp2.ptype, fxRate: fxRate.rate,
+      maintYear: pp2.maintYear || CY,
+      maintPointExpiry: pp2.maintPointExpiry || getMaintPointExpiry(pp2.maintYear || CY),
+      isPrepago: pp2.isPrepago || false,
       agentCommission: (pp2.mantAmt - pp2.mantDisc) * 0.02 + (pp2.moraAmt - pp2.moraDisc) * 0.03,
     };
     setPayments(ps => [...ps, payment]);
@@ -587,13 +607,22 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
     setClients(cs => cs.map(c => {
       if (c.id !== pp2.clientId) return c;
       if (pp2.ptype === "maintenance") {
-        const np = c.paidPoints + (ptsFinal || 0), nb = Math.max(0, c.balance - (pp2.mantAmt - pp2.mantDisc));
-        const prepago = nb === 0 && dOvr(c.dueDate) <= 0 && daysToNextRenewal() < 365;
-        return { ...c, paidPoints: np, balance: nb, status: nb === 0 ? "Active" : np > 0 ? "Partial" : c.status, prepago };
+        const mantPaidYear = pp2.maintYear || CY;
+        const isPrepagoPay = pp2.isPrepago || mantPaidYear > CY;
+        const pointExpiry = pp2.maintPointExpiry || getMaintPointExpiry(mantPaidYear);
+        const np = c.paidPoints + (ptsFinal || 0);
+        const nb = Math.max(0, c.balance - (pp2.mantAmt - pp2.mantDisc));
+        // Si es prepago: los puntos van a savedPoints con fecha de vencimiento correcta
+        // Si es pago normal: van directo a paidPoints disponibles
+        if (isPrepagoPay) {
+          const newSavedPt = { points: ptsFinal || 0, expiryDate: pointExpiry, savedBy: cu.username, savedDate: payment.date, maintYear: mantPaidYear, note: `Prepago mantenimiento ${mantPaidYear}` };
+          return { ...c, savedPoints: [...(c.savedPoints || []), newSavedPt], balance: nb, status: nb === 0 ? "Active" : c.status };
+        }
+        return { ...c, paidPoints: np, balance: nb, status: nb === 0 ? "Active" : np > 0 ? "Partial" : c.status };
       }
       if (pp2.ptype === "point_purchase") { const np = c.paidPoints + (ptsFinal || 0), na = c.annualPoints + (ptsFinal || 0); return { ...c, totalPoints: c.totalPoints + (ptsFinal || 0), annualPoints: na, paidPoints: np }; }
       if (pp2.ptype === "cancellation_payment") return { ...c, balance: 0, contractStatus: "Cancelado c/pago", cancelDate: payment.date, cancelReason: `Liquidación: ${pp2.note}` };
-      if (pp2.ptype === "moratorios") return c; // Moratorios no afectan saldo principal
+      if (pp2.ptype === "moratorios") return c;
       return c;
     }));
     // Cumplir promesas pendientes del cliente (si hay alguna activa este mes)
@@ -621,7 +650,7 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
   const emitReceipt = pid => {
     const p = payments.find(x => x.id === pid); if (!p) return;
     const w = window.open("", "_blank");
-    w.document.write(`<!DOCTYPE html><html><head><title>Recibo</title><style>body{font-family:Arial,sans-serif;max-width:500px;margin:40px auto;padding:20px}.h{text-align:center;border-bottom:2px solid #1d4ed8;padding-bottom:12px;margin-bottom:16px}.logo{font-size:20px;font-weight:800;color:#1d4ed8}.row{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #eee}.lbl{color:#666;font-size:12px}.val{font-weight:700;font-size:12px}.total{background:#1d4ed810;padding:10px 12px;border-radius:6px;margin-top:10px;display:flex;justify-content:space-between;font-size:14px;font-weight:700;color:#1d4ed8}.ft{margin-top:20px;text-align:center;font-size:10px;color:#888}</style></head><body><div class="h"><div class="logo">◈ POINTSUITE</div><h2 style="margin:6px 0 3px">Recibo de Pago</h2><div style="color:#666;font-size:11px">Folio: PAG-${p.id}</div></div>${[["Fecha", p.date], ["Cliente", p.clientName], ["Contrato", p.contractNo], ["Concepto", PT.find(t => t.v === p.type)?.l || p.type], ["Mantenimiento", f$(p.amountMant || 0)], p.amountMora ? ["Moratorios", f$(p.amountMora)] : null, p.discountMant ? ["Descuento mant.", `-${f$(p.discountMant)}`] : null, p.discountMora ? ["Descuento mora", `-${f$(p.discountMora)}`] : null, ["Pts acreditados", (p.points || 0).toLocaleString()], ["Medio", p.method], ["Gestor", p.processedBy], ["Cajero", p.processedByCajero || "—"], p.fxRate ? ["Tipo de cambio", `$${p.fxRate} MXN/USD`] : null].filter(Boolean).map(([l, v]) => `<div class="row"><span class="lbl">${l}</span><span class="val">${v}</span></div>`).join("")}<div class="total"><span>TOTAL</span><span>${f$(p.amount)}</span></div><div class="ft">PointSuite OMS · Recibo oficial</div></body></html>`);
+    w.document.write(`<!DOCTYPE html><html><head><title>Recibo</title><style>body{font-family:Arial,sans-serif;max-width:500px;margin:40px auto;padding:20px}.h{text-align:center;border-bottom:2px solid #1d4ed8;padding-bottom:12px;margin-bottom:16px}.logo{font-size:20px;font-weight:800;color:#1d4ed8}.row{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #eee}.lbl{color:#666;font-size:12px}.val{font-weight:700;font-size:12px}.total{background:#1d4ed810;padding:10px 12px;border-radius:6px;margin-top:10px;display:flex;justify-content:space-between;font-size:14px;font-weight:700;color:#1d4ed8}.ft{margin-top:20px;text-align:center;font-size:10px;color:#888}.prepago{background:#10b98110;border:1px solid #10b98133;border-radius:6px;padding:8px 10px;margin:8px 0;font-size:11px;color:#10b981;text-align:center}</style></head><body><div class="h"><div class="logo">◈ POINTSUITE</div><h2 style="margin:6px 0 3px">Recibo de Pago</h2><div style="color:#666;font-size:11px">Folio: PAG-${p.id}</div></div>${p.isPrepago ? `<div class="prepago">⭐ PREPAGO — Mantenimiento ${p.maintYear} · Puntos vigentes hasta ${p.maintPointExpiry}</div>` : p.type === "maintenance" ? `<div style="background:#1d4ed810;border-radius:6px;padding:6px 10px;margin:6px 0;font-size:11px;color:#1d4ed8;text-align:center">Mantenimiento Año ${p.maintYear || CY} · Puntos vencen ${p.maintPointExpiry || ""}</div>` : ""}${[["Fecha", p.date], ["Cliente", p.clientName], ["Contrato", p.contractNo], ["Concepto", PT.find(t => t.v === p.type)?.l || p.type], p.type === "maintenance" ? ["Año de mantenimiento", String(p.maintYear || CY)] : null, ["Mantenimiento", f$(p.amountMant || 0)], p.amountMora ? ["Moratorios", f$(p.amountMora)] : null, p.discountMant ? ["Descuento mant.", `-${f$(p.discountMant)}`] : null, p.discountMora ? ["Descuento mora", `-${f$(p.discountMora)}`] : null, ["Pts acreditados", (p.points || 0).toLocaleString()], p.type === "maintenance" ? ["Pts vigentes hasta", p.maintPointExpiry || ""] : null, ["Medio", p.method], ["Gestor", p.processedBy], ["Cajero", p.processedByCajero || "—"], p.fxRate ? ["Tipo de cambio", `$${p.fxRate} MXN/USD`] : null].filter(Boolean).map(([l, v]) => `<div class="row"><span class="lbl">${l}</span><span class="val">${v}</span></div>`).join("")}<div class="total"><span>TOTAL</span><span>${f$(p.amount)}</span></div><div class="ft">PointSuite OMS · Recibo oficial</div></body></html>`);
     w.document.close(); w.print();
   };
   // Recargar cleanup en mount
@@ -649,10 +678,21 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
               {[["Pts/Año", fP(client.annualPoints), P], ["Pagados", fP(client.paidPoints), G], ["Saldo USD", fUSD(saldoUSD), client.balance > 0 ? R : G], ["Mora USD", fUSD(intUSD2), Y]].map(([l, v, c]) => (<div key={l}><div style={{ fontSize: 8, color: T4, textTransform: "uppercase" }}>{l}</div><div style={{ color: c, fontWeight: 700, fontSize: 11 }}>{v}</div></div>))}
             </div>
             <div style={{ fontSize: 9, color: T4, marginTop: 3 }}>Tipo de cambio: ${fx2} MXN/USD · Saldo en MXN: {fMXN(client.balance)}</div>
-            <Bdg l={cls.l} />
+            <div style={{ marginTop: 6, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+              <Bdg l={cls.l} />
+              {isPrepago
+                ? <span style={{ background: "#10b981" + "20", color: "#10b981", border: "1px solid #10b98133", borderRadius: 4, padding: "2px 8px", fontSize: 10, fontWeight: 700 }}>⭐ PREPAGO — Año {maintYear} · Pts vigentes hasta {maintPointExpiry}</span>
+                : <span style={{ background: B + "20", color: B, border: `1px solid ${B}33`, borderRadius: 4, padding: "2px 8px", fontSize: 10, fontWeight: 700 }}>📅 Pago Mantenimiento Año {maintYear}</span>
+              }
+            </div>
+            {isPrepago && <div style={{ marginTop: 6, fontSize: 9, color: "#10b981" }}>✓ Cliente al corriente. Este es un prepago del mantenimiento {maintYear}. Los puntos estarán disponibles inmediatamente y vencen el {maintPointExpiry}.</div>}
           </div>;
         })()}
         <Inp label="Concepto" value={ptype} onChange={setPtype} opts={PT.map(t => ({ v: t.v, l: t.l }))} />
+        {isPrepago && mantAmt === "" && preloadedMantAmt && <div style={{ background: "#10b981" + "12", border: "1px solid #10b98133", borderRadius: 6, padding: "7px 10px", fontSize: 10, color: "#10b981", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span>💡 Monto sugerido para prepago año {maintYear}: <b>{fMXN(+preloadedMantAmt)}</b></span>
+          <Btn label="Usar este monto" variant="success" small onClick={() => setMantAmt(preloadedMantAmt)} />
+        </div>}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
           <div>
             <Inp label="Monto Mantenimiento a pagar (MXN $)" value={mantAmt} onChange={setMantAmt} type="number" />
@@ -737,9 +777,16 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
         {pendingPayments.length === 0 ? <div style={{ color: T4, fontSize: 11, textAlign: "center", padding: "15px 0" }}>Sin propuestas pendientes</div> :
           pendingPayments.map(p => (<div key={p.id} style={{ background: BG3, borderRadius: 7, padding: "11px 13px", marginBottom: 8, border: `1px solid ${Y}33` }}>
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-              <div><b style={{ color: T1 }}>{p.clientName}</b><span style={{ color: T4, fontSize: 10, marginLeft: 7 }}>{p.contractNo}</span></div>
+              <div>
+                <b style={{ color: T1 }}>{p.clientName}</b>
+                <span style={{ color: T4, fontSize: 10, marginLeft: 7 }}>{p.contractNo}</span>
+                {p.ptype === "maintenance" && <span style={{ background: B + "20", color: B, border: `1px solid ${B}33`, borderRadius: 4, padding: "1px 6px", fontSize: 9, fontWeight: 700, marginLeft: 7 }}>Mant. {p.maintYear || CY}{p.isPrepago ? " ⭐ PREPAGO" : ""}</span>}
+              </div>
               <span style={{ color: Y, fontSize: 10 }}>{new Date(p.submittedAt).toLocaleTimeString()}</span>
             </div>
+            {p.ptype === "maintenance" && p.maintPointExpiry && <div style={{ fontSize: 9, color: p.isPrepago ? "#10b981" : T4, marginBottom: 5 }}>
+              Puntos vigentes hasta: <b>{p.maintPointExpiry}</b>{p.isPrepago ? " (prepago — disponibles inmediatamente)" : ""}
+            </div>}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 4, marginBottom: 7, fontSize: 10 }}>
               {[["Mant.", f$(p.mantAmt), T2], ["Mora", f$(p.moraAmt), T2], ["Dscto.", f$(p.mantDisc + p.moraDisc), Y], ["A Cobrar", f$(p.totalACobrar), G]].map(([l, v, c]) => (<div key={l}><div style={{ fontSize: 8, color: T4, textTransform: "uppercase" }}>{l}</div><div style={{ color: c, fontWeight: 700 }}>{v}</div></div>))}
             </div>
