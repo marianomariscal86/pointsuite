@@ -556,7 +556,8 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
   const maintYear = client ? getMaintYear(client, payments) : CY;
   const isPrepago = client ? (cls.l === "Promoción Prepago" || maintYear === CY + 1) : false;
   const maintPointExpiry = getMaintPointExpiry(maintYear);
-  const preloadedMantAmt = client ? Math.round(client.annualPoints * pp) : 0;
+const preloadedMantAmt = client ? Math.round(client.annualPoints * pp) : 0;
+// MARKER_2026
 
   // Auto-precargar monto cuando se selecciona un cliente prepago
   useEffect(() => {
