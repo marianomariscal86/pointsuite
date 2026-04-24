@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { supabase } from './supabase.js';
 const BG = "#030912", BG2 = "#060d19", BG3 = "#0b1628", BD = "#18263d";
 const T1 = "#e2e8f0", T2 = "#8aa8c0", T3 = "#2e4a66", T4 = "#1e3558", T5 = "#2d4563"; // Corregido: T5 definido aquí
@@ -556,8 +556,16 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
   const maintYear = client ? getMaintYear(client, payments) : CY;
   const isPrepago = client ? (cls.l === "Promoción Prepago" || maintYear === CY + 1) : false;
   const maintPointExpiry = getMaintPointExpiry(maintYear);
-  // Si es prepago, precargar el monto automáticamente cuando se selecciona el cliente
-  const preloadedMantAmt = isPrepago && client ? String(Math.round(client.annualPoints * pp)) : "";
+  const preloadedMantAmt = client ? Math.round(client.annualPoints * pp) : 0;
+
+  // Auto-precargar monto cuando se selecciona un cliente prepago
+  useEffect(() => {
+    if (isPrepago && client && preloadedMantAmt > 0) {
+      setMantAmt(String(preloadedMantAmt));
+    } else if (!client) {
+      setMantAmt(""); setMoraAmt("");
+    }
+  }, [sid]); // eslint-disable-line
 
   const submit = () => {
     if (!client || (mantAmtN <= 0 && moraAmtN <= 0)) return;
@@ -673,26 +681,36 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
           const fx2 = fxRate?.rate || 17.5;
           const saldoUSD = client.balance / fx2;
           const intUSD2 = interest / fx2;
-          return <div style={{ padding: "8px 10px", background: BG3, borderRadius: 7, border: `1px solid ${cls.c}33` }}>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 4, marginBottom: 5 }}>
-              {[["Pts/Año", fP(client.annualPoints), P], ["Pagados", fP(client.paidPoints), G], ["Saldo USD", fUSD(saldoUSD), client.balance > 0 ? R : G], ["Mora USD", fUSD(intUSD2), Y]].map(([l, v, c]) => (<div key={l}><div style={{ fontSize: 8, color: T4, textTransform: "uppercase" }}>{l}</div><div style={{ color: c, fontWeight: 700, fontSize: 11 }}>{v}</div></div>))}
+          const montoMXN = Math.round(client.annualPoints * pp);
+          const montoUSD = (montoMXN / fx2).toFixed(2);
+          return <div style={{ padding: "10px 12px", background: BG3, borderRadius: 7, border: `1px solid ${isPrepago ? "#10b981" : cls.c}44` }}>
+            {/* Badge de año de mantenimiento - siempre visible */}
+            <div style={{ marginBottom: 8, padding: "7px 10px", background: isPrepago ? "#10b98118" : B + "15", borderRadius: 6, border: `1px solid ${isPrepago ? "#10b98144" : B + "33"}` }}>
+              <div style={{ fontSize: 12, fontWeight: 800, color: isPrepago ? "#10b981" : B, marginBottom: 3 }}>
+                {isPrepago ? "⭐ PREPAGO — Mantenimiento Año " + maintYear : "📅 Mantenimiento Año " + maintYear}
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                <div><div style={{ fontSize: 8, color: T4, textTransform: "uppercase" }}>Pts/año</div><div style={{ color: P, fontWeight: 700 }}>{fP(client.annualPoints)}</div></div>
+                <div><div style={{ fontSize: 8, color: T4, textTransform: "uppercase" }}>Monto MXN</div><div style={{ color: G, fontWeight: 700 }}>{fMXN(montoMXN)}</div></div>
+                <div><div style={{ fontSize: 8, color: T4, textTransform: "uppercase" }}>Monto USD</div><div style={{ color: B, fontWeight: 700 }}>USD ${montoUSD}</div></div>
+              </div>
+              {isPrepago && <div style={{ fontSize: 9, color: "#10b981", marginTop: 5 }}>
+                Puntos disponibles inmediatamente · Vencen el <b>{maintPointExpiry}</b>
+              </div>}
+              {!isPrepago && client.balance > 0 && <div style={{ fontSize: 9, color: Y, marginTop: 5 }}>
+                Saldo pendiente: <b>{fMXN(client.balance)}</b> ({fUSD(saldoUSD)})
+              </div>}
             </div>
-            <div style={{ fontSize: 9, color: T4, marginTop: 3 }}>Tipo de cambio: ${fx2} MXN/USD · Saldo en MXN: {fMXN(client.balance)}</div>
-            <div style={{ marginTop: 6, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-              <Bdg l={cls.l} />
-              {isPrepago
-                ? <span style={{ background: "#10b981" + "20", color: "#10b981", border: "1px solid #10b98133", borderRadius: 4, padding: "2px 8px", fontSize: 10, fontWeight: 700 }}>⭐ PREPAGO — Año {maintYear} · Pts vigentes hasta {maintPointExpiry}</span>
-                : <span style={{ background: B + "20", color: B, border: `1px solid ${B}33`, borderRadius: 4, padding: "2px 8px", fontSize: 10, fontWeight: 700 }}>📅 Pago Mantenimiento Año {maintYear}</span>
-              }
+            {/* Info adicional del cliente */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 6 }}>
+              {[["Pts pagados", fP(client.paidPoints), G], ["Saldo USD", fUSD(saldoUSD), client.balance > 0 ? R : G], ["Mora USD", fUSD(intUSD2), interest > 0 ? Y : T4]].map(([l, v, c]) => (
+                <div key={l}><div style={{ fontSize: 8, color: T4, textTransform: "uppercase" }}>{l}</div><div style={{ color: c, fontWeight: 700, fontSize: 11 }}>{v}</div></div>
+              ))}
             </div>
-            {isPrepago && <div style={{ marginTop: 6, fontSize: 9, color: "#10b981" }}>✓ Cliente al corriente. Este es un prepago del mantenimiento {maintYear}. Los puntos estarán disponibles inmediatamente y vencen el {maintPointExpiry}.</div>}
+            <div style={{ fontSize: 9, color: T4, marginTop: 5 }}>TC: ${fx2} MXN/USD · <Bdg l={cls.l} /></div>
           </div>;
         })()}
         <Inp label="Concepto" value={ptype} onChange={setPtype} opts={PT.map(t => ({ v: t.v, l: t.l }))} />
-        {isPrepago && mantAmt === "" && preloadedMantAmt && <div style={{ background: "#10b981" + "12", border: "1px solid #10b98133", borderRadius: 6, padding: "7px 10px", fontSize: 10, color: "#10b981", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span>💡 Monto sugerido para prepago año {maintYear}: <b>{fMXN(+preloadedMantAmt)}</b></span>
-          <Btn label="Usar este monto" variant="success" small onClick={() => setMantAmt(preloadedMantAmt)} />
-        </div>}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
           <div>
             <Inp label="Monto Mantenimiento a pagar (MXN $)" value={mantAmt} onChange={setMantAmt} type="number" />
