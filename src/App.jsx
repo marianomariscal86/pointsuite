@@ -598,7 +598,7 @@ function autoCleanup(pending, promises, setPending, setPromises) {
   if (expiredProm.length > 0) setTimeout(() => setPromises(ps => ps.filter(p => !expiredProm.find(e => e.id === p.id))), 0);
 }
 // Gestor de cobranza envía propuesta; cajero valida o elimina
-function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, users, pendingPayments, setPendingPayments, promises, setPromises, fxRate, setFxRate, preselClientId, onClearPresel, onSavePayment, onSavePending }) {
+function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, users, pendingPayments, setPendingPayments, promises, setPromises, fxRate, setFxRate, preselClientId, onClearPresel, onSavePayment, onSavePending, onRejectPending }) {
   const isCajero = cu.role === "cajero";
   const isGestor = cu.role === "gestor";
   const [sid, setSid] = useState(preselClientId || null), [ptype, setPtype] = useState("maintenance"), [mantAmt, setMantAmt] = useState(""), [moraAmt, setMoraAmt] = useState(""), [note, setNote] = useState(""), [ok, setOk] = useState(null);
@@ -717,7 +717,10 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
     setPromises(prs => prs.map(pr => pr.clientId === pp2.clientId && pr.status === "Pendiente" && pr.promiseDate && pr.promiseDate.slice(0, 7) >= TOM ? { ...pr, status: "Cumplida", fulfilledDate: payment.date } : pr));
     setPendingPayments(ps => ps.filter(p => p.id !== id));
   };
-  const rejectPending = id => setPendingPayments(ps => ps.filter(p => p.id !== id));
+  const rejectPending = id => {
+    setPendingPayments(ps => ps.filter(p => p.id !== id));
+    if (onRejectPending) onRejectPending(id).catch(console.error);
+  };
   const deletePayment = pid => {
     const p = payments.find(x => x.id === pid); if (!p) return;
     // Solo se puede eliminar un pago al día SIGUIENTE de haberlo procesado.
@@ -2184,6 +2187,8 @@ export default function App() {
       const dbUser = users.find(u => u.username === cu?.username);
       const userId = dbUser?.id || null;
       const fxId = fxRate?.id || null;
+      // pending_payment_id solo si es ID real de DB (menor a 1 billón)
+      const pendingId = paymentObj.pendingPaymentId && paymentObj.pendingPaymentId < 100000000 ? paymentObj.pendingPaymentId : null;
       const dbPayment = {
         client_id: paymentObj.clientId,
         concept: (paymentObj.type === 'prepago_maintenance' ? 'maintenance' : paymentObj.type) || 'maintenance',
@@ -2202,11 +2207,16 @@ export default function App() {
         processed_by: userId,
         originated_by: userId,
         payment_method_id: paymentObj.methodId || null,
-        pending_payment_id: paymentObj.pendingPaymentId || null,
+        pending_payment_id: pendingId,
         fx_rate_id: fxId,
         is_deleted: false,
       };
       await insertPayment(dbPayment);
+      // Marcar pending como validado en DB
+      if (pendingId) {
+        try { await updatePendingPayment(pendingId, { status: 'validated' }); }
+        catch (e) { console.warn('No se pudo actualizar pending_payment status:', e); }
+      }
       // Actualizar cliente en DB
       if (clientUpdates) {
         await updateClient(paymentObj.clientId, {
@@ -2215,17 +2225,28 @@ export default function App() {
           account_status: clientUpdates.status,
         });
       }
-      // Recargar datos
+      // Recargar todo desde DB
       await loadAll();
     } catch (e) {
       console.error('Error guardando pago:', e);
-      alert('Error guardando pago: ' + e.message);
+      alert('Error guardando pago en BD: ' + (e.message || JSON.stringify(e)));
     }
+  };
+
+  // Rechazar propuesta pendiente (marca como rejected en DB)
+  const rejectPendingPayment = async (pendingId) => {
+    try {
+      const realId = pendingId && pendingId < 100000000 ? pendingId : null;
+      if (realId) await updatePendingPayment(realId, { status: 'rejected' });
+      await loadAll();
+    } catch (e) { console.error('Error rechazando pending:', e); }
   };
 
   // Guardar reservación
   const saveReservation = async (resObj) => {
     try {
+      const dbUser = users.find(u => u.username === cu?.username);
+      const userId = dbUser?.id || null;
       await insertReservation({
         client_id: resObj.clientId,
         unit_id: resObj.unitId,
@@ -2235,12 +2256,12 @@ export default function App() {
         nights: resObj.nights,
         points_used: resObj.pointsUsed,
         status: resObj.status || 'Confirmed',
-        processed_by: cu?.id,
+        processed_by: userId,
       });
       await loadAll();
     } catch (e) {
       console.error('Error guardando reservación:', e);
-      alert('Error guardando reservación: ' + e.message);
+      alert('Error guardando reservación: ' + (e.message || JSON.stringify(e)));
     }
   };
 
@@ -2279,17 +2300,20 @@ export default function App() {
   const savePromise = async (pr) => {
     try {
       const fx = fxRate?.rate || 17.5;
+      const dbUser = users.find(u => u.username === cu?.username);
+      const userId = dbUser?.id || null;
       await insertPromise({
         client_id: pr.clientId,
-        gestor_id: cu?.id,
+        gestor_id: userId,
         promise_date: pr.promiseDate,
         amount_usd: (pr.amount || 0) / fx,
-        note: pr.note,
+        note: pr.note || '',
         status: 'pending',
       });
       await loadAll();
     } catch (e) {
       console.error('Error guardando promesa:', e);
+      alert('Error guardando promesa: ' + (e.message || JSON.stringify(e)));
     }
   };
 
@@ -2355,7 +2379,7 @@ export default function App() {
         <div style={{ fontSize: 15, fontWeight: 800, color: T2, marginBottom: 15, letterSpacing: ".03em" }}>{active?.l}</div>
         {tab === "dash" && <Dashboard clients={clients} reservations={reservations} payments={payments} pp={pp} promises={promises} users={users} />}
         {tab === "clients" && <ClientsView clients={clients} setClients={setClients} pp={pp} cu={cu} payments={payments} reservations={reservations} onGoToCashier={cid => { setPreselClient(cid); setTab("cashier"); }} onGoToRes={cid => { setPreselResClient(cid); setTab("res"); }} />}
-        {tab === "cashier" && <CashierView clients={clients} payments={payments} setPayments={setPayments} setClients={setClients} pp={pp} pms={pms} cu={cu} users={users} pendingPayments={pendingPayments} setPendingPayments={setPendingPayments} promises={promises} setPromises={setPromises} fxRate={fxRate} setFxRate={setFxRate} preselClientId={preselClient} onClearPresel={() => setPreselClient(null)} onSavePayment={savePayment} onSavePending={savePendingPayment} />}
+        {tab === "cashier" && <CashierView clients={clients} payments={payments} setPayments={setPayments} setClients={setClients} pp={pp} pms={pms} cu={cu} users={users} pendingPayments={pendingPayments} setPendingPayments={setPendingPayments} promises={promises} setPromises={setPromises} fxRate={fxRate} setFxRate={setFxRate} preselClientId={preselClient} onClearPresel={() => setPreselClient(null)} onSavePayment={savePayment} onSavePending={savePendingPayment} onRejectPending={rejectPendingPayment} />}
         {tab === "res" && <ReservationsView clients={clients} reservations={reservations} setReservations={setReservations} units={units} setUnits={setUnits} uts={uts} cu={cu} rc={rc} payments={payments} preselClientId={preselResClient} onClearPresel={() => setPreselResClient(null)} onSaveReservation={saveReservation} />}
         {tab === "col" && <CollectionsView clients={clients} payments={payments} pp={pp} promises={promises} setPromises={setPromises} cu={cu} fxRate={fxRate} onSavePromise={savePromise} />}
         {tab === "reports" && <ReportsView clients={clients} reservations={reservations} payments={payments} pp={pp} users={users} role={cu.role} courtesies={courtesies} rc={rc} />}
