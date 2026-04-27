@@ -2181,9 +2181,12 @@ export default function App() {
   const savePayment = async (paymentObj, clientUpdates) => {
     try {
       const fx = fxRate?.rate || 17.5;
+      // Buscar el ID real del usuario en Supabase
+      const dbUser = users.find(u => u.username === cu?.username);
+      const userId = dbUser?.id && typeof dbUser.id === 'number' && dbUser.id > 100 ? dbUser.id : null;
       const dbPayment = {
         client_id: paymentObj.clientId,
-        concept: paymentObj.type,
+        concept: paymentObj.type || 'maintenance',
         payment_date: paymentObj.date,
         maint_amount_usd: (paymentObj.amountMant || 0) / fx,
         mora_amount_usd: (paymentObj.amountMora || 0) / fx,
@@ -2192,11 +2195,12 @@ export default function App() {
         total_usd: paymentObj.amount / fx,
         total_mxn: paymentObj.amount,
         points_credited: paymentObj.points || 0,
-        note: paymentObj.note,
-        maint_year: paymentObj.maintYear,
-        maint_point_expiry: paymentObj.maintPointExpiry,
+        note: paymentObj.note || '',
+        maint_year: paymentObj.maintYear || null,
+        maint_point_expiry: paymentObj.maintPointExpiry || null,
         is_prepago: paymentObj.isPrepago || false,
-        processed_by: cu?.id,
+        processed_by: userId,
+        originated_by: userId,
         is_deleted: false,
       };
       await insertPayment(dbPayment);
