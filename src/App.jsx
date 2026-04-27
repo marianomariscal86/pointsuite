@@ -29,18 +29,47 @@ function cInt(bal, d, r) { if (bal <= 0 || d <= 0) return 0; return bal * (r / 1
 // Determina el año de mantenimiento pendiente de pago para un cliente
 // Regla: año más antiguo desde inicio del contrato que NO esté completamente pagado
 // Si TODOS los años hasta CY están pagados → CY+1 (prepago)
+// Distribuye los puntos de pagos a años FIFO empezando por el más antiguo pendiente.
+// Si un pago tiene maint_year explícito, ese año se llena primero pero el sobrante se aplica a los siguientes.
+function getPaidPtsByYear(client, payments) {
+  const paidByYear = {};
+  if (!client) return paidByYear;
+  const startYear = client.contractDate ? new Date(client.contractDate).getFullYear() : CY;
+  const annualPts = client.annualPoints || 0;
+  if (annualPts === 0) return paidByYear;
+
+  // Inicializar todos los años con 0 desde el inicio del contrato
+  for (let yr = startYear; yr <= CY + 5; yr++) paidByYear[yr] = 0;
+
+  // Procesar pagos ordenados por fecha (más antiguo primero)
+  const maintPays = payments
+    .filter(p => (p.type === "maintenance" || p.ptype === "maintenance") && p.clientId === client.id)
+    .sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+
+  maintPays.forEach(p => {
+    let remaining = p.points || 0;
+    // Empezar desde el año del pago si está especificado, si no, desde el año más antiguo no pagado
+    let startFromYear = p.maintYear || (p.date ? new Date(p.date).getFullYear() : startYear);
+    if (startFromYear < startYear) startFromYear = startYear;
+    // Aplicar al año del pago primero, luego avanzar a los siguientes
+    for (let yr = startFromYear; yr <= CY + 5 && remaining > 0; yr++) {
+      const space = annualPts - (paidByYear[yr] || 0);
+      if (space > 0) {
+        const apply = Math.min(remaining, space);
+        paidByYear[yr] = (paidByYear[yr] || 0) + apply;
+        remaining -= apply;
+      }
+    }
+  });
+  return paidByYear;
+}
+
 function getMaintYear(client, payments) {
   if (!client || !client.contractDate) return CY;
   const startYear = new Date(client.contractDate).getFullYear();
   const annualPts = client.annualPoints || 0;
   if (annualPts === 0) return CY;
-  // Agrupar puntos pagados por año de mantenimiento
-  const paidByYear = {};
-  payments.filter(p => (p.type === "maintenance" || p.ptype === "maintenance") && p.clientId === client.id).forEach(p => {
-    const yr = p.maintYear || (p.date ? new Date(p.date).getFullYear() : null);
-    if (yr) paidByYear[yr] = (paidByYear[yr] || 0) + (p.points || 0);
-  });
-  // Buscar el año más antiguo no pagado completamente
+  const paidByYear = getPaidPtsByYear(client, payments);
   for (let yr = startYear; yr <= CY; yr++) {
     if ((paidByYear[yr] || 0) < annualPts) return yr;
   }
@@ -50,22 +79,13 @@ function getMaintYear(client, payments) {
 function getMaintPointExpiry(maintYear) {
   return new Date(maintYear, 11, 31).toISOString().split("T")[0];
 }
-// Calcula todos los años de mantenimiento pendientes de pago para un cliente
-// Retorna array de {year, pts, montoMXN, paid (bool), partialPts} ordenado de más antiguo a más reciente
 function getMaintDesglose(client, payments, pp) {
   if (!client || !client.contractDate) return [];
   const startYear = new Date(client.contractDate).getFullYear();
-  const years = [];
-  // Obtener pagos de mantenimiento agrupados por año (revisar tanto type como ptype)
-  const maintPayments = payments.filter(p => (p.type === "maintenance" || p.ptype === "maintenance") && p.clientId === client.id);
-  const paidByYear = {};
-  maintPayments.forEach(p => {
-    const yr = p.maintYear || (p.date ? new Date(p.date).getFullYear() : null);
-    if (yr) paidByYear[yr] = (paidByYear[yr] || 0) + (p.points || 0);
-  });
   const annualPts = client.annualPoints || 0;
   const montoAnual = Math.round(annualPts * pp);
-  // Iterar desde año de inicio hasta año actual
+  const paidByYear = getPaidPtsByYear(client, payments);
+  const years = [];
   for (let yr = startYear; yr <= CY; yr++) {
     const ptsPagados = paidByYear[yr] || 0;
     const paid = ptsPagados >= annualPts;
@@ -74,45 +94,29 @@ function getMaintDesglose(client, payments, pp) {
   }
   return years;
 }
-// Días hasta el próximo 31 de enero (fecha de asignación de puntos y vencimiento de los anteriores)
 // Días hasta el siguiente 1 de enero (fecha de asignación de puntos nuevos)
 function daysToNextRenewal() { const next = new Date(CY + 1, 0, 1); return Math.floor((next - TODAY) / 86400000); }
-// Días hasta el 31 de diciembre de este año (fecha de vencimiento de puntos no usados)
+// Días hasta el 31 de diciembre de este año
 function daysToPointExpiry() { const exp = new Date(CY, 11, 31); if (TODAY > exp) exp.setFullYear(CY + 1); return Math.floor((exp - TODAY) / 86400000); }
-// Días hasta el 31 de enero (fecha límite de pago de mantenimiento)
 function daysToMaintDeadline() { const d = new Date(CY, 0, 31); if (TODAY > d) d.setFullYear(CY + 1); return Math.floor((d - TODAY) / 86400000); }
-// Clasificación extendida: un cliente con saldo 0 siempre está "Al corriente"
 function cDelEx(bal, dOvrDays) { if (bal === 0) { if (daysToNextRenewal() < 365) return { l: "Promoción Prepago", c: "#10b981", r: 0 }; return { l: "Al corriente", c: G, r: 0 }; } return cDel(dOvrDays); }
 
-// Clasificación real basada en años de mantenimiento pagados
-// Toma en cuenta el desglose de pagos por año (no el campo balance estático)
 function getClientStatus(client, payments) {
   if (!client || !client.contractDate) return cDelEx(client?.balance || 0, 0);
   const startYear = new Date(client.contractDate).getFullYear();
   const annualPts = client.annualPoints || 0;
-  // Acumular pts pagados por año
-  const paidByYear = {};
-  payments.filter(p => p.type === "maintenance" && p.clientId === client.id).forEach(p => {
-    const yr = p.maintYear || (p.date ? new Date(p.date).getFullYear() : null);
-    if (yr) paidByYear[yr] = (paidByYear[yr] || 0) + (p.points || 0);
-  });
-  // Verificar año por año desde el inicio del contrato
+  const paidByYear = getPaidPtsByYear(client, payments);
   let oldestUnpaidYear = null;
   for (let yr = startYear; yr <= CY; yr++) {
-    const paid = paidByYear[yr] || 0;
-    if (paid < annualPts) { oldestUnpaidYear = yr; break; }
+    if ((paidByYear[yr] || 0) < annualPts) { oldestUnpaidYear = yr; break; }
   }
   if (oldestUnpaidYear !== null) {
-    // Hay un año pendiente desde el más antiguo
-    // Calcular días de mora desde el 1 de enero del año pendiente
     const yearStart = new Date(oldestUnpaidYear, 0, 1);
     const daysOverdue = Math.max(0, Math.floor((TODAY - yearStart) / 86400000));
     return cDel(daysOverdue);
   }
-  // Todos los años hasta CY pagados → ver si CY+1 también está pagado
   const nextPaid = paidByYear[CY + 1] || 0;
   if (nextPaid >= annualPts) return { l: "Al corriente", c: G, r: 0 };
-  // CY pagado pero CY+1 no → Promoción Prepago (puede prepagar)
   return { l: "Promoción Prepago", c: "#10b981", r: 0 };
 }
 function calcAP(tot, used, yr) { const r = Math.max(0, tot - (used || 0)); return yr <= 1 ? r : Math.ceil(r / yr); }
