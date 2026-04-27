@@ -669,7 +669,7 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
     const payment = {
       id: Date.now(), clientId: pp2.clientId, clientName: pp2.clientName, contractNo: pp2.contractNo,
       date: new Date().toISOString().split("T")[0], amount: pp2.totalACobrar, amountMant: pp2.mantAmt - pp2.mantDisc, amountMora: pp2.moraAmt - pp2.moraDisc,
-      points: ptsFinal || 0, method: pm.name, costPct: pm.costPct || 0,
+      points: ptsFinal || 0, method: pm.name, methodId: pm.id, costPct: pm.costPct || 0,
       discountMant: pp2.mantDisc, discountMora: pp2.moraDisc,
       note: `[${pp2.ptype}] ${pp2.note}`, status: "Liquidado",
       processedBy: pp2.submittedBy, processedByCajero: cu.username,
@@ -677,7 +677,7 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
       maintYear: targetYear,
       maintPointExpiry: targetExpiry,
       isPrepago: pp2.isPrepago || targetYear > CY,
-      // Comisión diferenciada: prepago (1%) vs mantenimiento normal (2%) vs mora (3%)
+      pendingPaymentId: typeof pp2.id === 'number' && pp2.id > 1000000000 ? null : pp2.id,
       agentCommission: (pp2.isPrepago ? (pp2.mantAmt - pp2.mantDisc) * 0.01 : (pp2.mantAmt - pp2.mantDisc) * 0.02) + (pp2.moraAmt - pp2.moraDisc) * 0.03,
     };
     setPayments(ps => [...ps, payment]);
@@ -2181,9 +2181,9 @@ export default function App() {
   const savePayment = async (paymentObj, clientUpdates) => {
     try {
       const fx = fxRate?.rate || 17.5;
-      // Buscar el ID real del usuario en Supabase
       const dbUser = users.find(u => u.username === cu?.username);
       const userId = dbUser?.id || null;
+      const fxId = fxRate?.id || null;
       const dbPayment = {
         client_id: paymentObj.clientId,
         concept: (paymentObj.type === 'prepago_maintenance' ? 'maintenance' : paymentObj.type) || 'maintenance',
@@ -2201,6 +2201,9 @@ export default function App() {
         is_prepago: paymentObj.isPrepago || false,
         processed_by: userId,
         originated_by: userId,
+        payment_method_id: paymentObj.methodId || null,
+        pending_payment_id: paymentObj.pendingPaymentId || null,
+        fx_rate_id: fxId,
         is_deleted: false,
       };
       await insertPayment(dbPayment);
