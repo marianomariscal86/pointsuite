@@ -54,8 +54,8 @@ function mapClient(c) {
     emails: (c.client_emails || []).map(e => ({ label: e.label, email: e.email })),
     addresses: (c.client_addresses || []).map(a => ({ label: a.label, address: a.address })),
     comments: (c.client_comments || []).map(cm => ({
-      text: cm.comment_text || cm.comment || cm.note || '',
-      author: cm.created_by || cm.author || '',
+      text: cm.body || '',
+      author: cm.author_id ? String(cm.author_id) : '',
       date: cm.created_at?.slice(0, 10)
     })),
   };
