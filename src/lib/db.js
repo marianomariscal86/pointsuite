@@ -88,15 +88,18 @@ export async function insertPayment(p) {
 }
 
 function mapPayment(p) {
+  const totalMxn = parseFloat(p.total_mxn || 0);
+  const totalUsd = parseFloat(p.total_usd || 0);
+  // Si total_mxn es 0 pero total_usd no, calcular usando los montos individuales
   return {
     id: p.id,
     clientId: p.client_id,
     clientName: p.clients?.full_name,
     contractNo: p.clients?.contract_no,
     date: p.payment_date,
-    amount: parseFloat(p.total_mxn || 0),
-    amountMant: parseFloat(p.maint_amount_usd || 0),
-    amountMora: parseFloat(p.mora_amount_usd || 0),
+    amount: totalMxn || (totalUsd * 17.5),
+    amountMant: parseFloat(p.maint_amount_usd || 0),  // en USD
+    amountMora: parseFloat(p.mora_amount_usd || 0),  // en USD
     discountMant: parseFloat(p.maint_discount_usd || 0),
     discountMora: parseFloat(p.mora_discount_usd || 0),
     points: p.points_credited || 0,
@@ -248,11 +251,14 @@ export async function fetchPendingPayments() {
     clientName: p.clients?.full_name,
     contractNo: p.clients?.contract_no,
     ptype: p.concept,
-    mantAmt: parseFloat(p.maint_amount_usd || 0),
-    moraAmt: parseFloat(p.mora_amount_usd || 0),
-    mantDisc: parseFloat(p.maint_discount_usd || 0),
-    moraDisc: parseFloat(p.mora_discount_usd || 0),
-    totalACobrar: parseFloat(p.total_usd || 0),
+    // Los montos vienen en USD desde la DB, la app los convierte a MXN al renderizar
+    mantAmtUsd: parseFloat(p.maint_amount_usd || 0),
+    moraAmtUsd: parseFloat(p.mora_amount_usd || 0),
+    mantDiscUsd: parseFloat(p.maint_discount_usd || 0),
+    moraDiscUsd: parseFloat(p.mora_discount_usd || 0),
+    totalUsd: parseFloat(p.total_usd || 0),
+    // Estos campos se llenan al cargar usando el fxRate actual
+    mantAmt: 0, moraAmt: 0, mantDisc: 0, moraDisc: 0, totalACobrar: 0,
     submittedBy: p.users?.username,
     submittedAt: p.submitted_at,
     note: p.note,
