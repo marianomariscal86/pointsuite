@@ -83,6 +83,38 @@ function daysToPointExpiry() { const exp = new Date(CY, 11, 31); if (TODAY > exp
 function daysToMaintDeadline() { const d = new Date(CY, 0, 31); if (TODAY > d) d.setFullYear(CY + 1); return Math.floor((d - TODAY) / 86400000); }
 // Clasificación extendida: un cliente con saldo 0 siempre está "Al corriente"
 function cDelEx(bal, dOvrDays) { if (bal === 0) { if (daysToNextRenewal() < 365) return { l: "Promoción Prepago", c: "#10b981", r: 0 }; return { l: "Al corriente", c: G, r: 0 }; } return cDel(dOvrDays); }
+
+// Clasificación real basada en años de mantenimiento pagados
+// Toma en cuenta el desglose de pagos por año (no el campo balance estático)
+function getClientStatus(client, payments) {
+  if (!client || !client.contractDate) return cDelEx(client?.balance || 0, 0);
+  const startYear = new Date(client.contractDate).getFullYear();
+  const annualPts = client.annualPoints || 0;
+  // Acumular pts pagados por año
+  const paidByYear = {};
+  payments.filter(p => p.type === "maintenance" && p.clientId === client.id).forEach(p => {
+    const yr = p.maintYear || (p.date ? new Date(p.date).getFullYear() : null);
+    if (yr) paidByYear[yr] = (paidByYear[yr] || 0) + (p.points || 0);
+  });
+  // Verificar año por año desde el inicio del contrato
+  let oldestUnpaidYear = null;
+  for (let yr = startYear; yr <= CY; yr++) {
+    const paid = paidByYear[yr] || 0;
+    if (paid < annualPts) { oldestUnpaidYear = yr; break; }
+  }
+  if (oldestUnpaidYear !== null) {
+    // Hay un año pendiente desde el más antiguo
+    // Calcular días de mora desde el 1 de enero del año pendiente
+    const yearStart = new Date(oldestUnpaidYear, 0, 1);
+    const daysOverdue = Math.max(0, Math.floor((TODAY - yearStart) / 86400000));
+    return cDel(daysOverdue);
+  }
+  // Todos los años hasta CY pagados → ver si CY+1 también está pagado
+  const nextPaid = paidByYear[CY + 1] || 0;
+  if (nextPaid >= annualPts) return { l: "Al corriente", c: G, r: 0 };
+  // CY pagado pero CY+1 no → Promoción Prepago (puede prepagar)
+  return { l: "Promoción Prepago", c: "#10b981", r: 0 };
+}
 function calcAP(tot, used, yr) { const r = Math.max(0, tot - (used || 0)); return yr <= 1 ? r : Math.ceil(r / yr); }
 // calcPts: recibe la unidad con sus seasons y el id de la temporada detectada
 function calcPts(unit, seasonId, isWe) { if (!unit || !seasonId) return 0; const s = (unit.seasons || []).find(x => x.id === seasonId); if (!s) return 0; return isWe ? s.ptsWe : s.ptsWd; }
@@ -415,7 +447,7 @@ function ClientsView({ clients, setClients, pp, cu, payments, reservations, onGo
   const [srch, setSrch] = useState(""), [filt, setFilt] = useState("All"), [sel, setSel] = useState(null), [modal, setModal] = useState(null), [dtab, setDtab] = useState("info");
   const [saveModal, setSaveModal] = useState(null);
   const canEdit = ["superadmin", "admin"].includes(cu.role);
-  const en = useMemo(() => clients.map(c => { const d = dOvr(c.dueDate); const cl = cDelEx(c.balance, d); const interest = cInt(c.balance, d, cl.r * 12); return { ...c, dOvr: d, cls: cl, interest, totalOwed: c.balance + interest, ph: (c.phones || []).find(p => p.active !== false)?.number || "—" }; }), [clients]);
+  const en = useMemo(() => clients.map(c => { const d = dOvr(c.dueDate); const cl = getClientStatus(c, payments); const interest = cInt(c.balance, d, cl.r * 12); return { ...c, dOvr: d, cls: cl, interest, totalOwed: c.balance + interest, ph: (c.phones || []).find(p => p.active !== false)?.number || "—" }; }), [clients, payments]);
   const filtered = useMemo(() => { const ql = srch.toLowerCase(); return en.filter(c => { const ms = !srch || c.name.toLowerCase().includes(ql) || c.contractNo.toLowerCase().includes(ql) || (c.phones || []).some(p => p.number.includes(srch)) || (c.emails || []).some(e => e.email.toLowerCase().includes(ql)); const mf = filt === "All" || c.status === filt || (filt === "Morosos" && c.balance > 0) || (filt === "Cancelados" && c.contractStatus !== "Active"); return ms && mf; }); }, [en, srch, filt]);
   const selC = en.find(c => c.id === sel);
   const save = f => { if (modal === "new") setClients(cs => [...cs, { ...f, id: Date.now() }]); else setClients(cs => cs.map(c => c.id === modal.id ? { ...f, id: c.id } : c)); setModal(null); };
@@ -605,7 +637,7 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
   const [validateMid, setValidateMid] = useState("1"); // Medio de pago al validar
   const client = clients.find(c => c.id === sid);
   const d = client ? dOvr(client.dueDate) : 0;
-  const cls = cDelEx(client?.balance || 0, d);
+  const cls = client ? getClientStatus(client, payments) : { l: "Al corriente", c: "#22c55e", r: 0 };
   const interest = client ? cInt(client.balance, d, cls.r * 12) : 0;
   const mantAmtN = +mantAmt || 0, moraAmtN = +moraAmt || 0;
   // Año de mantenimiento a pagar para el cliente seleccionado
@@ -1185,7 +1217,7 @@ function CollectionsView({ clients, payments, pp, promises, setPromises, cu, fxR
   const costM = relP.reduce((a, p) => a + p.amount * (p.costPct || 0) / 100 + (p.agentCommission || 0), 0);
   const revM = relP.reduce((a, p) => a + p.amount, 0);
   const costPct2 = revM > 0 ? ((costM / revM) * 100).toFixed(1) : "0.0";
-  const en = myC.map(c => { const d = dOvr(c.dueDate); const cl = cDelEx(c.balance, d); return { ...c, dOvr: d, cls: cl, interest: cInt(c.balance, d, cl.r * 12) }; });
+  const en = myC.map(c => { const d = dOvr(c.dueDate); const cl = getClientStatus(c, payments); return { ...c, dOvr: d, cls: cl, interest: cInt(c.balance, d, cl.r * 12) }; });
   const fc = en.filter(c => filt === "All" || c.status === filt || (filt === "Morosos" && c.balance > 0));
   // Saldo en USD
   const balUSD = c => c.balance / fx;
@@ -1432,7 +1464,7 @@ function ReportsView({ clients, reservations, payments, pp, users, role, courtes
   const txCost = filteredPayments.reduce((a, p) => a + p.amount * (p.costPct || 0) / 100, 0);
   const commAll = filteredPayments.reduce((a, p) => a + (p.agentCommission || 0), 0) + filteredReservations.filter(r => r.status === "Confirmed").length * rc;
   const salaryAll = staff.reduce((a, u) => a + (u.salary || 0), 0);
-  const en = clients.map(c => { const d = dOvr(c.dueDate); const cl = cDelEx(c.balance, d); return { ...c, dOvr: d, cls: cl, interest: cInt(c.balance, d, cl.r * 12) }; });
+  const en = clients.map(c => { const d = dOvr(c.dueDate); const cl = getClientStatus(c, payments); return { ...c, dOvr: d, cls: cl, interest: cInt(c.balance, d, cl.r * 12) }; });
   const Row = ({ items }) => (<>{items.map(([l, v, c]) => (<div key={l} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", borderBottom: `1px solid ${BG3}` }}><span style={{ color: T4, fontSize: 11 }}>{l}</span><span style={{ color: c || T2, fontWeight: 600, fontSize: 11 }}>{v}</span></div>))}</>);
   return (<div>
     <div style={{ display: "flex", gap: 4, marginBottom: 10, flexWrap: "wrap", alignItems: "center" }}>
@@ -1614,7 +1646,7 @@ function ReportsView({ clients, reservations, payments, pp, users, role, courtes
           </div>
           <Tbl cols={["Contrato", "Cliente", "Pagados", "Usados este año", "Guardados", "Disponibles", "Gestor", "Estado Cuota"]}
             rows={list.map(c => {
-              const d = dOvr(c.dueDate); const cl = cDelEx(c.balance, d); return (<tr key={c.id} style={{ borderBottom: `1px solid ${BG3}` }}>
+              const d = dOvr(c.dueDate); const cl = getClientStatus(c, payments); return (<tr key={c.id} style={{ borderBottom: `1px solid ${BG3}` }}>
                 <td style={tBs()}>{c.contractNo}</td>
                 <td style={tW()}>{c.name}</td>
                 <td style={tG()}>{fP(c.paidPoints)}</td>
@@ -2040,7 +2072,7 @@ function Dashboard({ clients, reservations, payments, pp, promises, users }) {
   const commM = mPmts.reduce((a, p) => a + (p.agentCommission || 0), 0);
   const salM = users.filter(u => ["gestor", "cajero", "admin"].includes(u.role)).reduce((a, u) => a + (u.salary || 0), 0);
   const costPct = collM > 0 ? (((txM + commM + salM) / collM) * 100).toFixed(1) : "0.0";
-  const en = clients.map(c => { const d = dOvr(c.dueDate); const cl = cDelEx(c.balance, d); return { ...c, d, cls: cl, int: cInt(c.balance, d, cl.r * 12) }; });
+  const en = clients.map(c => { const d = dOvr(c.dueDate); const cl = getClientStatus(c, payments); return { ...c, d, cls: cl, int: cInt(c.balance, d, cl.r * 12) }; });
   return (<div>
     <div style={{ display: "flex", gap: 9, flexWrap: "wrap", marginBottom: 18 }}>
       <Kpi label="Cobrado Hoy" value={f$(collT)} accent={G} />
