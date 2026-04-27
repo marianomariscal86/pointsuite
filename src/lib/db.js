@@ -195,7 +195,7 @@ export async function fetchPaymentMethods() {
     .eq('is_active', true)
     .order('id');
   if (error) throw error;
-  return data.map(m => ({ id: m.id, name: m.name, costPct: parseFloat(m.cost_pct || 0) }));
+  return data.map(m => ({ id: m.id, name: m.name, costPct: parseFloat(m.cost_pct || 0), active: true }));
 }
 
 // ─── PROMESAS ─────────────────────────────────────────────
