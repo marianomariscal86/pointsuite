@@ -2183,10 +2183,10 @@ export default function App() {
       const fx = fxRate?.rate || 17.5;
       // Buscar el ID real del usuario en Supabase
       const dbUser = users.find(u => u.username === cu?.username);
-      const userId = dbUser?.id && typeof dbUser.id === 'number' && dbUser.id > 100 ? dbUser.id : null;
+      const userId = dbUser?.id || null;
       const dbPayment = {
         client_id: paymentObj.clientId,
-        concept: paymentObj.type || 'maintenance',
+        concept: (paymentObj.type === 'prepago_maintenance' ? 'maintenance' : paymentObj.type) || 'maintenance',
         payment_date: paymentObj.date,
         maint_amount_usd: (paymentObj.amountMant || 0) / fx,
         mora_amount_usd: (paymentObj.amountMora || 0) / fx,
@@ -2245,22 +2245,25 @@ export default function App() {
   const savePendingPayment = async (pp2) => {
     try {
       const fx = fxRate?.rate || 17.5;
+      const dbUser = users.find(u => u.username === cu?.username);
+      const userId = dbUser?.id || null;
       const dbPP = {
         client_id: pp2.clientId,
-        concept: pp2.ptype === 'prepago_maintenance' ? 'maintenance' : pp2.ptype,
-        submitted_by: cu?.id,
+        concept: pp2.ptype === 'prepago_maintenance' ? 'maintenance' : (pp2.ptype || 'maintenance'),
+        submitted_by: userId,
         expires_at: new Date(new Date().setHours(23, 59, 59)).toISOString(),
         maint_amount_usd: (pp2.mantAmt || 0) / fx,
         mora_amount_usd: (pp2.moraAmt || 0) / fx,
         maint_discount_usd: (pp2.mantDisc || 0) / fx,
         mora_discount_usd: (pp2.moraDisc || 0) / fx,
         total_usd: (pp2.totalACobrar || 0) / fx,
-        note: pp2.note,
+        note: pp2.note || '',
         status: 'pending',
-        maint_year: pp2.maintYear,
-        maint_point_expiry: pp2.maintPointExpiry,
+        maint_year: pp2.maintYear || null,
+        maint_point_expiry: pp2.maintPointExpiry || null,
         is_prepago: pp2.isPrepago || false,
       };
+      console.log('savePendingPayment payload:', JSON.stringify(dbPP, null, 2));
       await insertPendingPayment(dbPP);
       await loadAll();
     } catch (e) {
