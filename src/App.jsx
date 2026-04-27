@@ -1,5 +1,16 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import { supabase } from './supabase.js';
+import {
+  fetchClients, updateClient,
+  fetchPayments, insertPayment,
+  fetchReservations, insertReservation,
+  fetchUnits,
+  fetchFxRate, insertFxRate,
+  fetchPaymentMethods,
+  fetchPromises, insertPromise, updatePromise,
+  fetchPendingPayments, insertPendingPayment, updatePendingPayment,
+  fetchUsers,
+} from './lib/db.js';
 const BG = "#030912", BG2 = "#060d19", BG3 = "#0b1628", BD = "#18263d";
 const T1 = "#e2e8f0", T2 = "#8aa8c0", T3 = "#2e4a66", T4 = "#1e3558", T5 = "#2d4563"; // Corregido: T5 definido aquí
 const G = "#22c55e", R = "#ef4444", Y = "#f59e0b", B = "#3b82f6", P = "#8b5cf6", O = "#f97316", C = "#06b6d4", IND = "#1d4ed8";
@@ -15,9 +26,26 @@ function cDel(d) { if (d <= 0) return { l: "Al corriente", c: G, r: 0 }; if (d <
 function cInt(bal, d, r) { if (bal <= 0 || d <= 0) return 0; return bal * (r / 100) * (d / 365); }
 // Determina el año de mantenimiento pendiente de pago para un cliente
 // Regla: si ya pagó este año → año siguiente (prepago). Si no → año en curso.
+// Determina el año de mantenimiento pendiente de pago para un cliente
+// Regla: año más antiguo desde inicio del contrato que NO esté completamente pagado
+// Si TODOS los años hasta CY están pagados → CY+1 (prepago)
 function getMaintYear(client, payments) {
-  const paidThisYear = payments.some(p => p.type === "maintenance" && p.clientId === client.id && p.date && new Date(p.date).getFullYear() === CY);
-  return paidThisYear ? CY + 1 : CY;
+  if (!client || !client.contractDate) return CY;
+  const startYear = new Date(client.contractDate).getFullYear();
+  const annualPts = client.annualPoints || 0;
+  if (annualPts === 0) return CY;
+  // Agrupar puntos pagados por año de mantenimiento
+  const paidByYear = {};
+  payments.filter(p => (p.type === "maintenance" || p.ptype === "maintenance") && p.clientId === client.id).forEach(p => {
+    const yr = p.maintYear || (p.date ? new Date(p.date).getFullYear() : null);
+    if (yr) paidByYear[yr] = (paidByYear[yr] || 0) + (p.points || 0);
+  });
+  // Buscar el año más antiguo no pagado completamente
+  for (let yr = startYear; yr <= CY; yr++) {
+    if ((paidByYear[yr] || 0) < annualPts) return yr;
+  }
+  // Todos los años hasta CY están pagados → siguiente año (prepago)
+  return CY + 1;
 }
 function getMaintPointExpiry(maintYear) {
   return new Date(maintYear, 11, 31).toISOString().split("T")[0];
@@ -28,12 +56,12 @@ function getMaintDesglose(client, payments, pp) {
   if (!client || !client.contractDate) return [];
   const startYear = new Date(client.contractDate).getFullYear();
   const years = [];
-  // Obtener pagos de mantenimiento agrupados por año
-  const maintPayments = payments.filter(p => p.type === "maintenance" && p.clientId === client.id);
+  // Obtener pagos de mantenimiento agrupados por año (revisar tanto type como ptype)
+  const maintPayments = payments.filter(p => (p.type === "maintenance" || p.ptype === "maintenance") && p.clientId === client.id);
   const paidByYear = {};
   maintPayments.forEach(p => {
-    const yr = p.maintYear || new Date(p.date).getFullYear();
-    paidByYear[yr] = (paidByYear[yr] || 0) + (p.points || 0);
+    const yr = p.maintYear || (p.date ? new Date(p.date).getFullYear() : null);
+    if (yr) paidByYear[yr] = (paidByYear[yr] || 0) + (p.points || 0);
   });
   const annualPts = client.annualPoints || 0;
   const montoAnual = Math.round(annualPts * pp);
@@ -570,7 +598,7 @@ function autoCleanup(pending, promises, setPending, setPromises) {
   if (expiredProm.length > 0) setTimeout(() => setPromises(ps => ps.filter(p => !expiredProm.find(e => e.id === p.id))), 0);
 }
 // Gestor de cobranza envía propuesta; cajero valida o elimina
-function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, users, pendingPayments, setPendingPayments, promises, setPromises, fxRate, setFxRate, preselClientId, onClearPresel }) {
+function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, users, pendingPayments, setPendingPayments, promises, setPromises, fxRate, setFxRate, preselClientId, onClearPresel, onSavePayment, onSavePending }) {
   const isCajero = cu.role === "cajero";
   const isGestor = cu.role === "gestor";
   const [sid, setSid] = useState(preselClientId || null), [ptype, setPtype] = useState("maintenance"), [mantAmt, setMantAmt] = useState(""), [moraAmt, setMoraAmt] = useState(""), [note, setNote] = useState(""), [ok, setOk] = useState(null);
@@ -582,10 +610,11 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
   const mantAmtN = +mantAmt || 0, moraAmtN = +moraAmt || 0;
   // Año de mantenimiento a pagar para el cliente seleccionado
   const maintYear = client ? getMaintYear(client, payments) : CY;
-  const isPrepago = client ? (cls.l === "Promoción Prepago" || maintYear === CY + 1) : false;
+  // Es prepago SOLO si el mantenimiento del año en curso está completamente pagado
+  // y por lo tanto el siguiente pago corresponde al año siguiente
+  const isPrepago = client ? maintYear > CY : false;
   const maintPointExpiry = getMaintPointExpiry(maintYear);
-const preloadedMantAmt = client ? Math.round(client.annualPoints * pp) : 0;
-// MARKER_2026
+  const preloadedMantAmt = client ? Math.round(client.annualPoints * pp) : 0;
 
   // Auto-precargar monto y tipo cuando se selecciona un cliente
   useEffect(() => {
@@ -624,15 +653,19 @@ const preloadedMantAmt = client ? Math.round(client.annualPoints * pp) : 0;
     setPendingPayments(ps => [...ps, prop]);
     setOk({ name: client.name, total: totalCobrar, id: prop.id });
     setSid(null); setMantAmt(""); setMoraAmt(""); setNote("");
+    // Guardar en Supabase
+    if (onSavePending) onSavePending(prop).catch(console.error);
   };
   const validatePayment = (id, mid) => {
     const pp2 = pendingPayments.find(p => p.id === id); if (!pp2) return;
     const pm = pms.find(m => m.id === +mid) || pms[0];
     const cli = clients.find(c => c.id === pp2.clientId);
-    // Puntos acreditados: para mantenimiento, son los pts que corresponden al monto de mantenimiento pagado
-    // Se calcula dividiendo el monto MXN de mantenimiento entre el precio por punto (pp)
+    // Puntos acreditados: para mantenimiento, son los pts que corresponden al monto pagado
     const mantPaid = pp2.mantAmt - pp2.mantDisc;
     const ptsFinal = pp2.ptype === "maintenance" ? Math.round(mantPaid / pp) : (pp2.ptype === "point_purchase" ? Math.round(pp2.totalACobrar / pp) : 0);
+    // Determinar a qué año se asigna el pago (el más antiguo pendiente, salvo que sea prepago)
+    const targetYear = pp2.isPrepago ? (pp2.maintYear || CY + 1) : (cli ? getMaintYear(cli, payments) : CY);
+    const targetExpiry = getMaintPointExpiry(targetYear);
     const payment = {
       id: Date.now(), clientId: pp2.clientId, clientName: pp2.clientName, contractNo: pp2.contractNo,
       date: new Date().toISOString().split("T")[0], amount: pp2.totalACobrar, amountMant: pp2.mantAmt - pp2.mantDisc, amountMora: pp2.moraAmt - pp2.moraDisc,
@@ -641,35 +674,46 @@ const preloadedMantAmt = client ? Math.round(client.annualPoints * pp) : 0;
       note: `[${pp2.ptype}] ${pp2.note}`, status: "Liquidado",
       processedBy: pp2.submittedBy, processedByCajero: cu.username,
       type: pp2.ptype, fxRate: fxRate.rate,
-      maintYear: pp2.maintYear || CY,
-      maintPointExpiry: pp2.maintPointExpiry || getMaintPointExpiry(pp2.maintYear || CY),
-      isPrepago: pp2.isPrepago || false,
-      agentCommission: (pp2.mantAmt - pp2.mantDisc) * 0.02 + (pp2.moraAmt - pp2.moraDisc) * 0.03,
+      maintYear: targetYear,
+      maintPointExpiry: targetExpiry,
+      isPrepago: pp2.isPrepago || targetYear > CY,
+      // Comisión diferenciada: prepago (1%) vs mantenimiento normal (2%) vs mora (3%)
+      agentCommission: (pp2.isPrepago ? (pp2.mantAmt - pp2.mantDisc) * 0.01 : (pp2.mantAmt - pp2.mantDisc) * 0.02) + (pp2.moraAmt - pp2.moraDisc) * 0.03,
     };
     setPayments(ps => [...ps, payment]);
+    // Guardar en Supabase
+    if (onSavePayment) {
+      const clientAfter = clients.find(c => c.id === pp2.clientId);
+      onSavePayment(payment, clientAfter ? {
+        paidPoints: clientAfter.paidPoints + (ptsFinal || 0),
+        balance: Math.max(0, clientAfter.balance - (pp2.mantAmt - pp2.mantDisc)),
+        status: clientAfter.status,
+      } : null).catch(console.error);
+    }
     // Actualizar cliente según tipo
     setClients(cs => cs.map(c => {
       if (c.id !== pp2.clientId) return c;
       if (pp2.ptype === "maintenance") {
-        const mantPaidYear = pp2.maintYear || CY;
-        const isPrepagoPay = pp2.isPrepago || mantPaidYear > CY;
-        const pointExpiry = pp2.maintPointExpiry || getMaintPointExpiry(mantPaidYear);
+        const isPrepagoPay = pp2.isPrepago || targetYear > CY;
         const np = c.paidPoints + (ptsFinal || 0);
         const nb = Math.max(0, c.balance - (pp2.mantAmt - pp2.mantDisc));
         // Si es prepago: los puntos van a savedPoints con fecha de vencimiento correcta
-        // Si es pago normal: van directo a paidPoints disponibles
+        // (estarán disponibles inmediatamente para reservar)
         if (isPrepagoPay) {
-          const newSavedPt = { points: ptsFinal || 0, expiryDate: pointExpiry, savedBy: cu.username, savedDate: payment.date, maintYear: mantPaidYear, note: `Prepago mantenimiento ${mantPaidYear}` };
+          const newSavedPt = { points: ptsFinal || 0, expiryDate: targetExpiry, savedBy: cu.username, savedDate: payment.date, maintYear: targetYear, note: `Prepago mantenimiento ${targetYear}` };
           return { ...c, savedPoints: [...(c.savedPoints || []), newSavedPt], balance: nb, status: nb === 0 ? "Active" : c.status };
         }
+        // Pago normal: incrementa paidPoints y reduce saldo
         return { ...c, paidPoints: np, balance: nb, status: nb === 0 ? "Active" : np > 0 ? "Partial" : c.status };
       }
       if (pp2.ptype === "point_purchase") { const np = c.paidPoints + (ptsFinal || 0), na = c.annualPoints + (ptsFinal || 0); return { ...c, totalPoints: c.totalPoints + (ptsFinal || 0), annualPoints: na, paidPoints: np }; }
-      if (pp2.ptype === "cancellation_payment") return { ...c, balance: 0, contractStatus: "Cancelado c/pago", cancelDate: payment.date, cancelReason: `Liquidación: ${pp2.note}` };
+      if (pp2.ptype === "cancellation_payment") {
+        // Al cancelar el contrato el cliente PIERDE todos los puntos (incluyendo prepagos en savedPoints)
+        return { ...c, balance: 0, paidPoints: 0, savedPoints: [], contractStatus: "Cancelado c/pago", cancelDate: payment.date, cancelReason: `Liquidación: ${pp2.note}` };
+      }
       if (pp2.ptype === "moratorios") return c;
       return c;
     }));
-    // Cumplir promesas pendientes del cliente (si hay alguna activa este mes)
     setPromises(prs => prs.map(pr => pr.clientId === pp2.clientId && pr.status === "Pendiente" && pr.promiseDate && pr.promiseDate.slice(0, 7) >= TOM ? { ...pr, status: "Cumplida", fulfilledDate: payment.date } : pr));
     setPendingPayments(ps => ps.filter(p => p.id !== id));
   };
@@ -1043,7 +1087,7 @@ function ResModal({ clients, units, uts, reservations, onSave, onClose, cu, rc, 
     </div>
   </Modal>);
 }
-function ReservationsView({ clients, reservations, setReservations, units, setUnits, uts, cu, rc, payments, preselClientId, onClearPresel }) {
+function ReservationsView({ clients, reservations, setReservations, units, setUnits, uts, cu, rc, payments, preselClientId, onClearPresel, onSaveReservation }) {
   const [vtab, setVtab] = useState("avail"), [modal, setModal] = useState(preselClientId ? true : false), [confDoc, setConfDoc] = useState(null), [presel, setPresel] = useState(preselClientId || null), [filt, setFilt] = useState("All");
   const availC = useMemo(() => {
     // Clientes con mantenimiento pagado ESTE AÑO y con puntos disponibles sin usar en reservaciones
@@ -1061,7 +1105,15 @@ function ReservationsView({ clients, reservations, setReservations, units, setUn
       return { ...c, avail: c.paidPoints - usedR + sv, sv };
     });
   }, [clients, reservations, payments]);
-  const save = res => { const nr = { ...res, id: Date.now(), processedBy: cu.username }; setReservations(rs => [...rs, nr]); setUnits(us => us.map(u => u.id === res.unitId ? { ...u, occ: [...(u.occ || []), { ci: res.checkIn, co: res.checkOut }] } : u)); if (onClearPresel) onClearPresel(); setModal(false); setConfDoc(nr); };
+  const save = res => {
+    const nr = { ...res, id: Date.now(), processedBy: cu.username };
+    setReservations(rs => [...rs, nr]);
+    setUnits(us => us.map(u => u.id === res.unitId ? { ...u, occ: [...(u.occ || []), { ci: res.checkIn, co: res.checkOut }] } : u));
+    if (onClearPresel) onClearPresel();
+    setModal(false); setConfDoc(nr);
+    // Guardar en Supabase
+    if (onSaveReservation) onSaveReservation(nr).catch(console.error);
+  };
   const filtered = reservations.filter(r => filt === "All" || r.status === filt || r.clientName === filt);
   return (<div>
     {modal && <ResModal clients={availC.length ? availC : clients} units={units} uts={uts} reservations={reservations} onSave={save} onClose={() => setModal(false)} cu={cu} rc={rc} presel={presel} />}
@@ -1119,7 +1171,7 @@ function ReservationsView({ clients, reservations, setReservations, units, setUn
   </div>);
 }
 // ── COLLECTIONS ──────────────────────────────────────────────────────────────
-function CollectionsView({ clients, payments, pp, promises, setPromises, cu, fxRate }) {
+function CollectionsView({ clients, payments, pp, promises, setPromises, cu, fxRate, onSavePromise }) {
   const [filt, setFilt] = useState("All"), [vtab, setVtab] = useState("accounts"), [pMod, setPMod] = useState(null), [pDate, setPDate] = useState(new Date().toISOString().split("T")[0]), [pAmt, setPAmt] = useState(""), [pNote, setPNote] = useState("");
   const isAdmin = ["superadmin", "admin"].includes(cu.role);
   const myC = isAdmin ? clients : clients.filter(c => c.assignedGestor === cu.username);
@@ -1146,8 +1198,11 @@ function CollectionsView({ clients, payments, pp, promises, setPromises, cu, fxR
   const pDescuentoExcede = pDescuento > pMaxDisc;
   const addProm = () => {
     if (!pMod || !pAmt || !pDate) return;
-    if (pDescuentoExcede) return; // No se puede enviar si descuento excede límite
-    setPromises(ps => [...ps, { id: Date.now(), clientId: pMod.id, clientName: pMod.name, contractNo: pMod.contractNo, promiseDate: pDate, amount: pAmtN, note: pNote, status: "Pendiente", gestorUsername: cu.username, gestorName: cu.name, createdAt: TOD }]);
+    if (pDescuentoExcede) return;
+    const newProm = { id: Date.now(), clientId: pMod.id, clientName: pMod.name, contractNo: pMod.contractNo, promiseDate: pDate, amount: pAmtN, note: pNote, status: "Pendiente", gestorUsername: cu.username, gestorName: cu.name, createdAt: TOD };
+    setPromises(ps => [...ps, newProm]);
+    // Guardar en Supabase
+    if (onSavePromise) onSavePromise(newProm).catch(console.error);
     setPMod(null); setPAmt(""); setPNote("");
   };
   return (<div>
@@ -1887,14 +1942,29 @@ function ContractsView({ clients, setClients }) {
   const [modal, setModal] = useState(null), [reason, setReason] = useState(""), [type, setType] = useState("Cancelado s/pago"), [srch, setSrch] = useState("");
   const filtered = clients.filter(c => c.name.toLowerCase().includes(srch.toLowerCase()) || c.contractNo.toLowerCase().includes(srch.toLowerCase()));
   return (<div>
-    {modal && <Modal title={`Cancelar — ${modal.name}`} onClose={() => setModal(null)}>
-      <div style={{ background: R + "12", border: `1px solid ${R}28`, borderRadius: 7, padding: "10px 12px", marginBottom: 12, fontSize: 11, color: R }}>⚠ El cliente perderá acceso a reservaciones.{modal.balance > 0 && <div style={{ marginTop: 4, color: Y }}>Saldo pendiente: <b>{f$(modal.balance)}</b></div>}</div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-        <Inp label="Tipo de cancelación" value={type} onChange={setType} opts={[{ v: "Cancelado s/pago", l: "Sin pago — deuda activa" }, { v: "Cancelado c/pago", l: "Con pago — deuda liquidada" }]} />
-        <Inp label="Motivo / Notas" value={reason} onChange={setReason} />
-      </div>
-      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}><Btn label="No cancelar" variant="ghost" onClick={() => setModal(null)} /><Btn label="Confirmar Cancelación" variant="danger" onClick={() => { setClients(cs => cs.map(c => c.id === modal.id ? { ...c, contractStatus: type, cancelReason: reason, cancelDate: new Date().toISOString().split("T")[0] } : c)); setModal(null); setReason(""); }} /></div>
-    </Modal>}
+    {modal && (() => {
+      const savedTotal = (modal.savedPoints || []).filter(sp => new Date(sp.expiryDate) > new Date()).reduce((a, sp) => a + sp.points, 0);
+      const totalPtsToLose = (modal.paidPoints || 0) + savedTotal;
+      return <Modal title={`Cancelar — ${modal.name}`} onClose={() => setModal(null)}>
+        <div style={{ background: R + "12", border: `1px solid ${R}28`, borderRadius: 7, padding: "10px 12px", marginBottom: 12, fontSize: 11, color: R }}>
+          ⚠ El cliente perderá acceso a reservaciones.
+          {totalPtsToLose > 0 && <div style={{ marginTop: 4, color: O }}>Pierde <b>{fP(totalPtsToLose)}</b> ({fP(modal.paidPoints || 0)} pagados{savedTotal > 0 ? ` + ${fP(savedTotal)} prepagos/guardados` : ""}).</div>}
+          {modal.balance > 0 && <div style={{ marginTop: 4, color: Y }}>Saldo pendiente: <b>{f$(modal.balance)}</b></div>}
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+          <Inp label="Tipo de cancelación" value={type} onChange={setType} opts={[{ v: "Cancelado s/pago", l: "Sin pago — deuda activa" }, { v: "Cancelado c/pago", l: "Con pago — deuda liquidada" }]} />
+          <Inp label="Motivo / Notas" value={reason} onChange={setReason} />
+        </div>
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}>
+          <Btn label="No cancelar" variant="ghost" onClick={() => setModal(null)} />
+          <Btn label="Confirmar Cancelación" variant="danger" onClick={() => {
+            // Al cancelar el cliente PIERDE TODOS los puntos (paidPoints + savedPoints)
+            setClients(cs => cs.map(c => c.id === modal.id ? { ...c, contractStatus: type, cancelReason: reason, cancelDate: new Date().toISOString().split("T")[0], paidPoints: 0, savedPoints: [] } : c));
+            setModal(null); setReason("");
+          }} />
+        </div>
+      </Modal>;
+    })()}
     <div style={{ display: "flex", gap: 9, flexWrap: "wrap", marginBottom: 13 }}>
       <Kpi label="Contratos Activos" value={clients.filter(c => c.contractStatus === "Active").length} accent={G} />
       <Kpi label="Cancelados s/Pago" value={clients.filter(c => c.contractStatus === "Cancelado s/pago").length} accent={R} />
@@ -2026,28 +2096,213 @@ export default function App() {
   const [users, setUsers] = useState(INIT_U);
   const [cu, setCu] = useState(null);
   const [tab, setTab] = useState(null);
-  const [clients, setClients] = useState(INIT_C);
-  const [reservations, setReservations] = useState(INIT_R);
-  const [payments, setPayments] = useState(INIT_P);
+  const [clients, setClients] = useState([]);
+  const [reservations, setReservations] = useState([]);
+  const [payments, setPayments] = useState([]);
   const [seasonOrder, setSeasonOrder] = useState(INIT_SEASON_ORDER);
-  const [fxRate, setFxRate] = useState({ rate: 17.5, date: TOD }); // Tipo de cambio USD→MXN actualizable diariamente
+  const [fxRate, setFxRate] = useState({ rate: 17.5, date: TOD });
   const [uts, setUts] = useState(INIT_UT);
-  const [units, setUnits] = useState(INIT_UNITS);
+  const [units, setUnits] = useState([]);
   const [pp, setPp] = useState(4.75);
-  const [pms, setPms] = useState(INIT_PM);
+  const [pms, setPms] = useState([]);
   const [rc, setRc] = useState(150);
   const [courtesies, setCourtesies] = useState([]);
   const [cr, setCr] = useState(INIT_CR);
-  const [promises, setPromises] = useState([
-    { id: 1, clientId: 3, clientName: "Sofia & Carlos Reyes", contractNo: "C-2017-003", promiseDate: TOD, amount: 15000, note: "Prometió pagar mitad del saldo", status: "Pendiente", gestorUsername: "gestor2", gestorName: "Luis Mora", createdAt: TOD },
-    { id: 2, clientId: 7, clientName: "Amira Hassan", contractNo: "C-2019-007", promiseDate: new Date(Date.now() + 3 * 86400000).toISOString().split("T")[0], amount: 9500, note: "Liquidación total acordada", status: "Pendiente", gestorUsername: "gestor1", gestorName: "Ana López", createdAt: TOD },
-  ]);
+  const [promises, setPromises] = useState([]);
   const [pendingSales, setPendingSales] = useState([]);
   const [pendingPayments, setPendingPayments] = useState([]);
   const [preselClient, setPreselClient] = useState(null);
   const [preselResClient, setPreselResClient] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [dbError, setDbError] = useState(null);
+
+  // ── Cargar datos de Supabase ──────────────────────────
+  const loadAll = useCallback(async () => {
+    setLoading(true);
+    setDbError(null);
+    try {
+      const [
+        dbClients, dbPayments, dbReservations, dbUnits,
+        dbFxRate, dbPms, dbPromises, dbPending, dbUsers
+      ] = await Promise.all([
+        fetchClients(),
+        fetchPayments(),
+        fetchReservations(),
+        fetchUnits(),
+        fetchFxRate(),
+        fetchPaymentMethods(),
+        fetchPromises(),
+        fetchPendingPayments(),
+        fetchUsers(),
+      ]);
+
+      // Calcular occ en units desde reservaciones
+      const unitsWithOcc = dbUnits.map(u => ({
+        ...u,
+        occ: dbReservations
+          .filter(r => r.unitId === u.id && r.status === 'Confirmed')
+          .map(r => ({ ci: r.checkIn, co: r.checkOut }))
+      }));
+
+      if (dbClients.length > 0) setClients(dbClients);
+      else setClients(INIT_C); // fallback a datos demo si DB vacía
+
+      if (dbPayments.length > 0) setPayments(dbPayments);
+      if (dbReservations.length > 0) setReservations(dbReservations);
+      if (unitsWithOcc.length > 0) setUnits(unitsWithOcc);
+      else setUnits(INIT_UNITS);
+
+      setFxRate(dbFxRate);
+      if (dbPms.length > 0) setPms(dbPms);
+      else setPms(INIT_PM);
+      if (dbPromises.length > 0) setPromises(dbPromises);
+      if (dbPending.length > 0) setPendingPayments(dbPending);
+      if (dbUsers.length > 0) setUsers(dbUsers);
+
+    } catch (e) {
+      console.error('Error cargando datos:', e);
+      setDbError(e.message);
+      // Fallback a datos demo
+      setClients(INIT_C);
+      setUnits(INIT_UNITS);
+      setPms(INIT_PM);
+    }
+    setLoading(false);
+  }, []);
+
+  // Cargar datos cuando el usuario hace login
+  useEffect(() => {
+    if (cu) loadAll();
+  }, [cu]);
+
+  // ── Wrappers que sincronizan React + Supabase ─────────
+
+  // Guardar pago validado
+  const savePayment = async (paymentObj, clientUpdates) => {
+    try {
+      const fx = fxRate?.rate || 17.5;
+      const dbPayment = {
+        client_id: paymentObj.clientId,
+        concept: paymentObj.type,
+        payment_date: paymentObj.date,
+        maint_amount_usd: (paymentObj.amountMant || 0) / fx,
+        mora_amount_usd: (paymentObj.amountMora || 0) / fx,
+        maint_discount_usd: (paymentObj.discountMant || 0) / fx,
+        mora_discount_usd: (paymentObj.discountMora || 0) / fx,
+        total_usd: paymentObj.amount / fx,
+        total_mxn: paymentObj.amount,
+        points_credited: paymentObj.points || 0,
+        note: paymentObj.note,
+        maint_year: paymentObj.maintYear,
+        maint_point_expiry: paymentObj.maintPointExpiry,
+        is_prepago: paymentObj.isPrepago || false,
+        processed_by: cu?.id,
+        is_deleted: false,
+      };
+      await insertPayment(dbPayment);
+      // Actualizar cliente en DB
+      if (clientUpdates) {
+        await updateClient(paymentObj.clientId, {
+          paid_points: clientUpdates.paidPoints,
+          balance_usd: clientUpdates.balance,
+          account_status: clientUpdates.status,
+        });
+      }
+      // Recargar datos
+      await loadAll();
+    } catch (e) {
+      console.error('Error guardando pago:', e);
+      alert('Error guardando pago: ' + e.message);
+    }
+  };
+
+  // Guardar reservación
+  const saveReservation = async (resObj) => {
+    try {
+      await insertReservation({
+        client_id: resObj.clientId,
+        unit_id: resObj.unitId,
+        season: resObj.season,
+        check_in: resObj.checkIn,
+        check_out: resObj.checkOut,
+        nights: resObj.nights,
+        points_used: resObj.pointsUsed,
+        status: resObj.status || 'Confirmed',
+        processed_by: cu?.id,
+      });
+      await loadAll();
+    } catch (e) {
+      console.error('Error guardando reservación:', e);
+      alert('Error guardando reservación: ' + e.message);
+    }
+  };
+
+  // Guardar propuesta de cobro
+  const savePendingPayment = async (pp2) => {
+    try {
+      const fx = fxRate?.rate || 17.5;
+      const dbPP = {
+        client_id: pp2.clientId,
+        concept: pp2.ptype === 'prepago_maintenance' ? 'maintenance' : pp2.ptype,
+        submitted_by: cu?.id,
+        expires_at: new Date(new Date().setHours(23, 59, 59)).toISOString(),
+        maint_amount_usd: (pp2.mantAmt || 0) / fx,
+        mora_amount_usd: (pp2.moraAmt || 0) / fx,
+        maint_discount_usd: (pp2.mantDisc || 0) / fx,
+        mora_discount_usd: (pp2.moraDisc || 0) / fx,
+        total_usd: (pp2.totalACobrar || 0) / fx,
+        note: pp2.note,
+        status: 'pending',
+        maint_year: pp2.maintYear,
+        maint_point_expiry: pp2.maintPointExpiry,
+        is_prepago: pp2.isPrepago || false,
+      };
+      await insertPendingPayment(dbPP);
+      await loadAll();
+    } catch (e) {
+      console.error('Error guardando propuesta:', e);
+      alert('Error guardando propuesta: ' + e.message);
+    }
+  };
+
+  // Guardar promesa de pago
+  const savePromise = async (pr) => {
+    try {
+      const fx = fxRate?.rate || 17.5;
+      await insertPromise({
+        client_id: pr.clientId,
+        gestor_id: cu?.id,
+        promise_date: pr.promiseDate,
+        amount_usd: (pr.amount || 0) / fx,
+        note: pr.note,
+        status: 'pending',
+      });
+      await loadAll();
+    } catch (e) {
+      console.error('Error guardando promesa:', e);
+    }
+  };
+
   const login = u => { setCu(u); setTab(RT[u.role][0]); };
-  const logout = () => { setCu(null); setTab(null); };
+  const logout = () => { setCu(null); setTab(null); setClients([]); setPayments([]); };
+
+  if (!cu) return <Login onLogin={login} users={users} />;
+
+  if (loading) return (
+    <div style={{ minHeight: "100vh", background: BG, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 16 }}>
+      <div style={{ width: 32, height: 32, border: `3px solid ${B}`, borderTop: "3px solid transparent", borderRadius: "50%", animation: "spin 1s linear infinite" }} />
+      <div style={{ color: T3, fontSize: 12 }}>Cargando datos...</div>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+    </div>
+  );
+
+  if (dbError && clients.length === 0) return (
+    <div style={{ minHeight: "100vh", background: BG, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 12 }}>
+      <div style={{ color: R, fontSize: 13, fontWeight: 700 }}>⚠ Error de conexión</div>
+      <div style={{ color: T4, fontSize: 11 }}>{dbError}</div>
+      <button onClick={loadAll} style={{ background: B, color: "#fff", border: "none", borderRadius: 6, padding: "8px 18px", cursor: "pointer" }}>Reintentar</button>
+    </div>
+  );
   if (!cu) return <Login onLogin={login} users={users} />;
   const allowed = ATABS.filter(t => RT[cu.role].includes(t.id));
   const active = ATABS.find(t => t.id === tab);
@@ -2090,9 +2345,9 @@ export default function App() {
         <div style={{ fontSize: 15, fontWeight: 800, color: T2, marginBottom: 15, letterSpacing: ".03em" }}>{active?.l}</div>
         {tab === "dash" && <Dashboard clients={clients} reservations={reservations} payments={payments} pp={pp} promises={promises} users={users} />}
         {tab === "clients" && <ClientsView clients={clients} setClients={setClients} pp={pp} cu={cu} payments={payments} reservations={reservations} onGoToCashier={cid => { setPreselClient(cid); setTab("cashier"); }} onGoToRes={cid => { setPreselResClient(cid); setTab("res"); }} />}
-        {tab === "cashier" && <CashierView clients={clients} payments={payments} setPayments={setPayments} setClients={setClients} pp={pp} pms={pms} cu={cu} users={users} pendingPayments={pendingPayments} setPendingPayments={setPendingPayments} promises={promises} setPromises={setPromises} fxRate={fxRate} setFxRate={setFxRate} preselClientId={preselClient} onClearPresel={() => setPreselClient(null)} />}
-        {tab === "res" && <ReservationsView clients={clients} reservations={reservations} setReservations={setReservations} units={units} setUnits={setUnits} uts={uts} cu={cu} rc={rc} payments={payments} preselClientId={preselResClient} onClearPresel={() => setPreselResClient(null)} />}
-        {tab === "col" && <CollectionsView clients={clients} payments={payments} pp={pp} promises={promises} setPromises={setPromises} cu={cu} fxRate={fxRate} />}
+        {tab === "cashier" && <CashierView clients={clients} payments={payments} setPayments={setPayments} setClients={setClients} pp={pp} pms={pms} cu={cu} users={users} pendingPayments={pendingPayments} setPendingPayments={setPendingPayments} promises={promises} setPromises={setPromises} fxRate={fxRate} setFxRate={setFxRate} preselClientId={preselClient} onClearPresel={() => setPreselClient(null)} onSavePayment={savePayment} onSavePending={savePendingPayment} />}
+        {tab === "res" && <ReservationsView clients={clients} reservations={reservations} setReservations={setReservations} units={units} setUnits={setUnits} uts={uts} cu={cu} rc={rc} payments={payments} preselClientId={preselResClient} onClearPresel={() => setPreselResClient(null)} onSaveReservation={saveReservation} />}
+        {tab === "col" && <CollectionsView clients={clients} payments={payments} pp={pp} promises={promises} setPromises={setPromises} cu={cu} fxRate={fxRate} onSavePromise={savePromise} />}
         {tab === "reports" && <ReportsView clients={clients} reservations={reservations} payments={payments} pp={pp} users={users} role={cu.role} courtesies={courtesies} rc={rc} />}
         {tab === "config" && <ConfigView seasonOrder={seasonOrder} setSeasonOrder={setSeasonOrder} uts={uts} setUts={setUts} units={units} setUnits={setUnits} pp={pp} setPp={setPp} />}
         {tab === "pmethods" && <PayMethodsView pms={pms} setPms={setPms} />}
