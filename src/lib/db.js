@@ -73,7 +73,7 @@ export async function fetchPayments() {
 }
 
 export async function insertPayment(p) {
-  console.log('DB_INSERT_LOG:', JSON.stringify(p, null, 2));
+  console.log('insertPayment payload:', JSON.stringify(p, null, 2));
   const { data, error } = await supabase
     .from('payments')
     .insert([p])
