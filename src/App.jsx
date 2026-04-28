@@ -634,7 +634,7 @@ function autoCleanup(pending, promises, setPending, setPromises) {
   if (expiredProm.length > 0) setTimeout(() => setPromises(ps => ps.filter(p => !expiredProm.find(e => e.id === p.id))), 0);
 }
 // Gestor de cobranza envía propuesta; cajero valida o elimina
-function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, users, pendingPayments, setPendingPayments, promises, setPromises, fxRate, setFxRate, preselClientId, onClearPresel, onSavePayment, onSavePending }) {
+function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, users, pendingPayments, setPendingPayments, promises, setPromises, fxRate, setFxRate, preselClientId, onClearPresel, onSavePayment, onSavePending, onRejectPending }) {
   const isCajero = cu.role === "cajero";
   const isGestor = cu.role === "gestor";
   const [sid, setSid] = useState(preselClientId || null), [ptype, setPtype] = useState("maintenance"), [mantAmt, setMantAmt] = useState(""), [moraAmt, setMoraAmt] = useState(""), [note, setNote] = useState(""), [ok, setOk] = useState(null);
@@ -766,7 +766,10 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
     setPromises(prs => prs.map(pr => pr.clientId === pp2.clientId && pr.status === "Pendiente" && pr.promiseDate && pr.promiseDate.slice(0, 7) >= TOM ? { ...pr, status: "Cumplida", fulfilledDate: payment.date } : pr));
     setPendingPayments(ps => ps.filter(p => p.id !== id));
   };
-  const rejectPending = id => setPendingPayments(ps => ps.filter(p => p.id !== id));
+  const rejectPending = id => {
+    setPendingPayments(ps => ps.filter(p => p.id !== id));
+    if (onRejectPending) onRejectPending(id).catch(console.error);
+  };
   const deletePayment = pid => {
     const p = payments.find(x => x.id === pid); if (!p) return;
     // Solo se puede eliminar un pago al día SIGUIENTE de haberlo procesado.
@@ -2377,6 +2380,18 @@ export default function App() {
     }
   };
 
+  // Rechazar propuesta pendiente (marca como rejected en BD)
+  const rejectPendingPayment = async (pendingId) => {
+    try {
+      const realId = pendingId && pendingId < 100000000 ? pendingId : null;
+      if (realId) await updatePendingPayment(realId, { status: 'rejected' });
+      await loadAll();
+    } catch (e) {
+      console.error('Error rechazando propuesta:', e);
+      alert('Error rechazando propuesta: ' + (e.message || JSON.stringify(e)));
+    }
+  };
+
   const login = u => { setCu(u); setTab(RT[u.role][0]); };
   const logout = () => { setCu(null); setTab(null); setClients([]); setPayments([]); };
 
@@ -2417,6 +2432,7 @@ export default function App() {
           <span style={{ fontSize: 9, color: T3 }}>{cu.name}</span>
           <RBdg r={cu.role} />
         </div>
+        <button onClick={() => loadAll()} title="Recargar datos desde la base de datos" style={{ background: "transparent", border: `1px solid ${BD}`, color: B, borderRadius: 6, padding: "2px 8px", fontSize: 8, cursor: "pointer", fontFamily: "inherit", marginRight: 5 }}>🔄 Recargar</button>
         <button onClick={logout} style={{ background: "transparent", border: `1px solid ${BD}`, color: T4, borderRadius: 6, padding: "2px 8px", fontSize: 8, cursor: "pointer", fontFamily: "inherit" }}>Salir ⇥</button>
       </div>
     </div>
@@ -2439,7 +2455,7 @@ export default function App() {
         <div style={{ fontSize: 15, fontWeight: 800, color: T2, marginBottom: 15, letterSpacing: ".03em" }}>{active?.l}</div>
         {tab === "dash" && <Dashboard clients={clients} reservations={reservations} payments={payments} pp={pp} promises={promises} users={users} />}
         {tab === "clients" && <ClientsView clients={clients} setClients={setClients} pp={pp} cu={cu} payments={payments} reservations={reservations} onGoToCashier={cid => { setPreselClient(cid); setTab("cashier"); }} onGoToRes={cid => { setPreselResClient(cid); setTab("res"); }} />}
-        {tab === "cashier" && <CashierView clients={clients} payments={payments} setPayments={setPayments} setClients={setClients} pp={pp} pms={pms} cu={cu} users={users} pendingPayments={pendingPayments} setPendingPayments={setPendingPayments} promises={promises} setPromises={setPromises} fxRate={fxRate} setFxRate={setFxRate} preselClientId={preselClient} onClearPresel={() => setPreselClient(null)} onSavePayment={savePayment} onSavePending={savePendingPayment} />}
+        {tab === "cashier" && <CashierView clients={clients} payments={payments} setPayments={setPayments} setClients={setClients} pp={pp} pms={pms} cu={cu} users={users} pendingPayments={pendingPayments} setPendingPayments={setPendingPayments} promises={promises} setPromises={setPromises} fxRate={fxRate} setFxRate={setFxRate} preselClientId={preselClient} onClearPresel={() => setPreselClient(null)} onSavePayment={savePayment} onSavePending={savePendingPayment} onRejectPending={rejectPendingPayment} />}
         {tab === "res" && <ReservationsView clients={clients} reservations={reservations} setReservations={setReservations} units={units} setUnits={setUnits} uts={uts} cu={cu} rc={rc} payments={payments} preselClientId={preselResClient} onClearPresel={() => setPreselResClient(null)} onSaveReservation={saveReservation} />}
         {tab === "col" && <CollectionsView clients={clients} payments={payments} pp={pp} promises={promises} setPromises={setPromises} cu={cu} fxRate={fxRate} onSavePromise={savePromise} />}
         {tab === "reports" && <ReportsView clients={clients} reservations={reservations} payments={payments} pp={pp} users={users} role={cu.role} courtesies={courtesies} rc={rc} />}
