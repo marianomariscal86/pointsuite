@@ -4,7 +4,8 @@ import {
   fetchClients, updateClient,
   fetchPayments, insertPayment,
   fetchReservations, insertReservation,
-  fetchUnits,
+  fetchUnits, insertUnit, updateUnit,
+  fetchUnitTypes, insertUnitType, updateUnitType, deleteUnitType,
   fetchFxRate, insertFxRate,
   fetchPaymentMethods,
   fetchPromises, insertPromise, updatePromise,
@@ -131,8 +132,8 @@ const mkE = (label, email, active = true) => ({ label, email, active });
 const mkA = (label, text, active = true) => ({ label, text, active });
 const mkC = (text, by, date) => ({ id: Math.random(), text, by, date });
 const RM = { superadmin: { l: "Super Admin", c: B }, admin: { l: "Admin", c: Y }, cajero: { l: "Cajero", c: G }, gestor: { l: "Gestor", c: P } };
-const RT = { superadmin: ["dash", "clients", "cashier", "res", "col", "reports", "config", "pmethods", "comp", "users"], admin: ["dash", "clients", "reports", "config", "team", "contracts", "courtesies", "ps"], cajero: ["cashier", "clients", "ps"], gestor: ["res", "col", "cashier", "clients", "ps"] };
-const ATABS = [{ id: "dash", l: "Dashboard", i: "◈" }, { id: "clients", l: "Clientes", i: "◉" }, { id: "cashier", l: "Caja", i: "◐" }, { id: "res", l: "Reservaciones", i: "◫" }, { id: "col", l: "Cobranzas", i: "◎" }, { id: "reports", l: "Reportes", i: "◧" }, { id: "config", l: "Config", i: "◬" }, { id: "pmethods", l: "Medios de Pago", i: "◆" }, { id: "comp", l: "Sueldos", i: "◇" }, { id: "users", l: "Usuarios", i: "◭" }, { id: "team", l: "Mi Equipo", i: "◩" }, { id: "contracts", l: "Contratos", i: "◪" }, { id: "courtesies", l: "Cortesías", i: "◤" }, { id: "ps", l: "Venta Puntos", i: "◥" }];
+const RT = { superadmin: ["dash", "clients", "cashier", "res", "col", "reports", "config", "pmethods", "comp", "users"], admin: ["dash", "clients", "reports", "config", "team", "contracts", "courtesies", "ps"], cajero: ["cashier", "clients", "ps"], gestor: ["res", "col", "cashier", "clients", "ec", "ps"] };
+const ATABS = [{ id: "dash", l: "Dashboard", i: "◈" }, { id: "clients", l: "Clientes", i: "◉" }, { id: "cashier", l: "Caja", i: "◐" }, { id: "res", l: "Reservaciones", i: "◫" }, { id: "col", l: "Cobranzas", i: "◎" }, { id: "reports", l: "Reportes", i: "◧" }, { id: "config", l: "Config", i: "◬" }, { id: "pmethods", l: "Medios de Pago", i: "◆" }, { id: "comp", l: "Sueldos", i: "◇" }, { id: "users", l: "Usuarios", i: "◭" }, { id: "team", l: "Mi Equipo", i: "◩" }, { id: "contracts", l: "Contratos", i: "◪" }, { id: "courtesies", l: "Cortesías", i: "◤" }, { id: "ec", l: "Mi Estado de Cuenta", i: "◊" }, { id: "ps", l: "Venta Puntos", i: "◥" }];
 const INIT_U = [
   { id: 1, username: "superadmin", password: "admin", role: "superadmin", name: "Super Administrador", color: B, salary: 0, commissions: { collection: 0 }, active: true },
   { id: 2, username: "admin1", password: "admin", role: "admin", name: "Carmen Ríos", color: Y, salary: 5000, commissions: { collection: 0.015 }, active: true },
@@ -638,7 +639,12 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
   const isCajero = cu.role === "cajero";
   const isGestor = cu.role === "gestor";
   const [sid, setSid] = useState(preselClientId || null), [ptype, setPtype] = useState("maintenance"), [mantAmt, setMantAmt] = useState(""), [moraAmt, setMoraAmt] = useState(""), [note, setNote] = useState(""), [ok, setOk] = useState(null);
-  const [validateMid, setValidateMid] = useState("1"); // Medio de pago al validar
+  const [validateMid, setValidateMid] = useState("1"); // Medio de pago al validar (cajero)
+  const [proposalMid, setProposalMid] = useState(""); // Medio de pago al proponer (gestor)
+  // Auto-seleccionar primer método si no hay uno
+  useEffect(() => { if (!proposalMid && pms.length > 0) setProposalMid(String(pms[0].id)); }, [pms]); // eslint-disable-line
+  const selectedPm = pms.find(m => String(m.id) === String(proposalMid)) || pms[0];
+  const costPct = selectedPm?.costPct || 0;
   const client = clients.find(c => c.id === sid);
   const d = client ? dOvr(client.dueDate) : 0;
   const cls = client ? getClientStatus(client, payments) : { l: "Al corriente", c: "#22c55e", r: 0 };
@@ -666,31 +672,35 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
 
   const submit = () => {
     if (!client || (mantAmtN <= 0 && moraAmtN <= 0)) return;
+    if (!proposalMid) return; // Debe tener medio de pago seleccionado
     const isPrepagoPay = ptype === "prepago_maintenance";
+    // Descuento máximo permitido depende del tipo de pago y el medio
+    // Mantenimiento normal/vencido: 20% - cost_pct
+    // Prepago: 30% - cost_pct
+    const maxDiscPct = (isPrepagoPay ? 0.30 : 0.20) - (costPct / 100);
     if (isPrepagoPay) {
       const montoCompleto = Math.round(client.annualPoints * pp);
       const descuento = Math.max(0, montoCompleto - mantAmtN);
-      if (descuento > montoCompleto * 0.20) return; // Bloqueo descuento >20%
-      if (mantAmtN > montoCompleto) return; // No se puede cobrar más que el total
-    }
-    // Para prepago, no hay descuento sobre saldo (balance=0), se valida diferente
-    if (!isPrepagoPay) {
+      if (descuento > montoCompleto * maxDiscPct) return; // Bloqueo descuento excedido
+      if (mantAmtN > montoCompleto) return;
+    } else {
       const saldoMXN = client.balance;
       const moraMXN = interest;
       const autoDiscMant = Math.max(0, saldoMXN - mantAmtN);
       const autoDiscMora = Math.max(0, moraMXN - moraAmtN);
-      if (autoDiscMant > saldoMXN * 0.20 || autoDiscMora > moraMXN) return;
+      if (autoDiscMant > saldoMXN * maxDiscPct || autoDiscMora > moraMXN) return;
     }
     const totalCobrar = mantAmtN + moraAmtN;
     const prop = {
       id: Date.now(), clientId: client.id, clientName: client.name, contractNo: client.contractNo,
-      ptype: isPrepagoPay ? "maintenance" : ptype, // se guarda como maintenance para compatibilidad
+      ptype: isPrepagoPay ? "maintenance" : ptype,
       mantAmt: mantAmtN, moraAmt: moraAmtN,
       mantDisc: 0, moraDisc: 0,
       totalACobrar: totalCobrar, submittedBy: cu.username, submittedAt: new Date().toISOString(),
       note: isPrepagoPay ? `[PREPAGO] Mantenimiento adelantado año ${maintYear}${note ? " — " + note : ""}` : note,
       status: "Por Validar",
-      maintYear, maintPointExpiry, isPrepago: isPrepagoPay
+      maintYear, maintPointExpiry, isPrepago: isPrepagoPay,
+      methodId: +proposalMid, methodName: selectedPm?.name, costPct,
     };
     setPendingPayments(ps => [...ps, prop]);
     setOk({ name: client.name, total: totalCobrar, id: prop.id });
@@ -850,6 +860,19 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
           opts={PT.filter(t => t.v !== "prepago_maintenance" || isPrepago).map(t => ({ v: t.v, l: t.l }))}
         />
 
+        {/* Selector de medio de pago — el gestor lo determina */}
+        <div>
+          <Inp
+            label="Medio de pago"
+            value={proposalMid}
+            onChange={setProposalMid}
+            opts={pms.filter(m => m.active !== false).map(m => ({ v: String(m.id), l: `${m.name}${m.costPct > 0 ? ` (costo ${m.costPct}%)` : " (sin costo)"}` }))}
+          />
+          {selectedPm && costPct > 0 && <div style={{ fontSize: 9, color: T4, marginTop: 3 }}>
+            Costo financiero: {costPct}% · Descuento máximo permitido: <b style={{ color: Y }}>{((ptype === "prepago_maintenance" ? 30 : 20) - costPct).toFixed(1)}%</b>
+          </div>}
+        </div>
+
         {/* Formulario especial para Mantenimiento Adelantado */}
         {ptype === "prepago_maintenance" && client && (() => {
           const fx2 = fxRate?.rate || 17.5;
@@ -889,12 +912,13 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
             <Inp label={`Monto a cobrar (MXN $) — Mantenimiento Año ${nextMaintYear}`} value={mantAmt} onChange={setMantAmt} type="number" />
             {mantAmtN > 0 && mantAmtN < montoCompleto && (() => {
               const descuento = montoCompleto - mantAmtN;
-              const maxDesc = montoCompleto * 0.20;
+              const maxPct = 0.30 - (costPct / 100);
+              const maxDesc = montoCompleto * maxPct;
               const exceso = descuento > maxDesc;
               return <div style={{ fontSize: 9, color: exceso ? R : Y, marginTop: 3, fontWeight: exceso ? 700 : 500 }}>
                 {exceso
-                  ? `⛔ El descuento (${fMXN(descuento)}) excede el máximo permitido (20% = ${fMXN(maxDesc)}).`
-                  : `⚠ El monto completo es ${fMXN(montoCompleto)}. Descuento aplicado: ${fMXN(descuento)} (${((descuento / montoCompleto) * 100).toFixed(1)}%).`}
+                  ? `⛔ El descuento (${fMXN(descuento)}) excede el máximo permitido (${(maxPct * 100).toFixed(1)}% = ${fMXN(maxDesc)}). Tope: 30% - ${costPct}% costo medio.`
+                  : `⚠ Monto completo: ${fMXN(montoCompleto)}. Descuento aplicado: ${fMXN(descuento)} (${((descuento / montoCompleto) * 100).toFixed(1)}% de ${(maxPct * 100).toFixed(1)}% permitido).`}
               </div>;
             })()}
             {mantAmtN > montoCompleto && <div style={{ fontSize: 9, color: R, marginTop: 3, fontWeight: 700 }}>
@@ -1006,21 +1030,22 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
       </div>}
       {(() => {
         const isPrepagoPay = ptype === "prepago_maintenance";
+        const maxDiscPct = (isPrepagoPay ? 0.30 : 0.20) - (costPct / 100);
         if (isPrepagoPay) {
           const montoCompleto = client ? Math.round(client.annualPoints * pp) : 0;
           const descuento = Math.max(0, montoCompleto - mantAmtN);
-          const excedeDesc = descuento > montoCompleto * 0.20;
+          const excedeDesc = descuento > montoCompleto * maxDiscPct;
           const excedeMax = mantAmtN > montoCompleto;
-          return <Btn label={`⭐ Enviar Prepago Año ${maintYear} a Caja`} variant="success" onClick={submit} disabled={!client || mantAmtN <= 0 || excedeDesc || excedeMax} />;
+          return <Btn label={`⭐ Enviar Prepago Año ${maintYear} a Caja${selectedPm ? ` (${selectedPm.name})` : ""}`} variant="success" onClick={submit} disabled={!client || mantAmtN <= 0 || excedeDesc || excedeMax || !proposalMid} />;
         }
         const saldoMXN = client?.balance || 0;
         const moraMXN = interest;
         const descMant2 = Math.max(0, saldoMXN - mantAmtN);
         const descMora2 = Math.max(0, moraMXN - moraAmtN);
-        const exMant2 = descMant2 > saldoMXN * 0.20;
+        const exMant2 = descMant2 > saldoMXN * maxDiscPct;
         const exMora2 = descMora2 > moraMXN;
         const blocked = exMant2 || exMora2;
-        return <Btn label="Enviar a Caja para Validación" onClick={submit} disabled={!client || (mantAmtN <= 0 && moraAmtN <= 0) || blocked} />;
+        return <Btn label={`Enviar a Caja para Validación${selectedPm ? ` (${selectedPm.name})` : ""}`} onClick={submit} disabled={!client || (mantAmtN <= 0 && moraAmtN <= 0) || blocked || !proposalMid} />;
       })()}
       <div style={{ fontSize: 9, color: T4, marginTop: 5 }}>Si el cajero no valida el pago antes del fin del día, la propuesta se cancela automáticamente.</div>
     </div>)}
@@ -1052,10 +1077,9 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
             <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 4, marginBottom: 7, fontSize: 10 }}>
               {[["Mant.", f$(p.mantAmt), T2], ["Mora", f$(p.moraAmt), T2], ["Dscto.", f$(p.mantDisc + p.moraDisc), Y], ["A Cobrar", f$(p.totalACobrar), G]].map(([l, v, c]) => (<div key={l}><div style={{ fontSize: 8, color: T4, textTransform: "uppercase" }}>{l}</div><div style={{ color: c, fontWeight: 700 }}>{v}</div></div>))}
             </div>
-            <div style={{ fontSize: 9, color: T4, marginBottom: 8 }}>Propuso: {p.submittedBy} · {p.note}</div>
-            {isCajero && <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-              <select value={validateMid} onChange={e => setValidateMid(e.target.value)} style={{ ...IS, flex: 1, fontSize: 11, padding: "5px 8px" }}>{pms.filter(m => m.active).map(m => (<option key={m.id} value={m.id}>{m.name}</option>))}</select>
-              <Btn label="✓ Validar (cobrado)" variant="success" small onClick={() => validatePayment(p.id, validateMid)} />
+            <div style={{ fontSize: 9, color: T4, marginBottom: 4 }}>Propuso: <b style={{ color: T2 }}>{p.submittedBy}</b> · Medio: <b style={{ color: B }}>{p.methodName || pms.find(m => m.id === p.methodId)?.name || "Efectivo"}</b>{p.note ? ` · ${p.note}` : ""}</div>
+            {isCajero && <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6 }}>
+              <Btn label={`✓ Validar (cobrado en ${p.methodName || pms.find(m => m.id === p.methodId)?.name || "Efectivo"})`} variant="success" small onClick={() => validatePayment(p.id, p.methodId || 1)} />
               <Btn label="✗ Rechazar" variant="danger" small onClick={() => rejectPending(p.id)} />
             </div>}
           </div>))}
@@ -1727,7 +1751,7 @@ function ReportsView({ clients, reservations, payments, pp, users, role, courtes
   </div>);
 }
 // ── CONFIG ───────────────────────────────────────────────────────────────────
-function ConfigView({ seasonOrder, setSeasonOrder, uts, setUts, units, setUnits, pp, setPp }) {
+function ConfigView({ seasonOrder, setSeasonOrder, uts, setUts, units, setUnits, pp, setPp, onSaveUnit, onSaveUnitType, onRemoveUnitType }) {
   const [sec, setSec] = useState("tarifa"), [editUT, setEditUT] = useState(null), [editU, setEditU] = useState(null);
   const mO = MONTHS_ES.map((m, i) => ({ v: i + 1, l: m })), dO = Array.from({ length: 31 }, (_, i) => i + 1).map(d => ({ v: d, l: d }));
   // Orden temporadas: helpers para mover arriba/abajo
@@ -1779,7 +1803,11 @@ function ConfigView({ seasonOrder, setSeasonOrder, uts, setUts, units, setUnits,
           <Inp label="Pts base/noche" value={editUT.basePts} onChange={v => setEditUT(u => ({ ...u, basePts: +v }))} type="number" />
           <Inp label="Estado" value={editUT.active ? "si" : "no"} onChange={v => setEditUT(u => ({ ...u, active: v === "si" }))} opts={[{ v: "si", l: "Activo" }, { v: "no", l: "Inactivo" }]} />
         </div>
-        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}><Btn label="Cancelar" variant="ghost" onClick={() => setEditUT(null)} /><Btn label="Guardar" onClick={() => { setUts(us => us.map(x => x.id === editUT.id ? editUT : x)); setEditUT(null); }} /></div>
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}><Btn label="Cancelar" variant="ghost" onClick={() => setEditUT(null)} /><Btn label="Guardar" onClick={() => {
+          setUts(us => us.map(x => x.id === editUT.id ? editUT : x));
+          if (onSaveUnitType) onSaveUnitType(editUT);
+          setEditUT(null);
+        }} /></div>
       </Modal>}
       <Tbl cols={["Tipo", "Pts Base/noche", "Estado", ""]} rows={uts.map(ut => (<tr key={ut.id} style={{ borderBottom: `1px solid ${BG3}` }}>
         <td style={tW()}>{ut.name}</td>
@@ -1818,7 +1846,13 @@ function ConfigView({ seasonOrder, setSeasonOrder, uts, setUts, units, setUnits,
         })}
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}>
           <Btn label="Cancelar" variant="ghost" onClick={() => setEditU(null)} />
-          <Btn label="Guardar" onClick={() => { if (editU.id === "new") setUnits(us => [...us, { ...editU, id: Date.now() }]); else setUnits(us => us.map(x => x.id === editU.id ? editU : x)); setEditU(null); }} />
+          <Btn label="Guardar" onClick={() => {
+            const isNew = editU.id === "new";
+            if (isNew) setUnits(us => [...us, { ...editU, id: Date.now() }]);
+            else setUnits(us => us.map(x => x.id === editU.id ? editU : x));
+            if (onSaveUnit) onSaveUnit(editU);
+            setEditU(null);
+          }} />
         </div>
       </Modal>}
       <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}><Btn label="+ Nueva Unidad" onClick={() => setEditU(emptyUnit())} /></div>
@@ -1830,7 +1864,10 @@ function ConfigView({ seasonOrder, setSeasonOrder, uts, setUts, units, setUnits,
           <td style={tS()}>{(u.seasons || []).map(s => { const m = SEASON_META.find(x => x.id === s.id); return (<span key={s.id} style={{ color: m?.color || T3, marginRight: 5 }}>{m?.name}:{s.ptsWd}/{s.ptsWe}</span>); })}</td>
           <td style={tBs()}>{(u.occ || []).length} res.</td>
           <td style={td()}><Bdg l={u.active ? "Active" : "Cancelado"} /></td>
-          <td style={tFl()}><Btn label="Editar" variant="ghost" small onClick={() => setEditU({ ...u, seasons: [...(u.seasons || []).map(s => ({ ...s, ranges: [...(s.ranges || [])] }))] })} /><Btn label={u.active ? "Baja" : "Activar"} variant={u.active ? "danger" : "success"} small onClick={() => setUnits(us => us.map(x => x.id === u.id ? { ...x, active: !x.active } : x))} /></td>
+          <td style={tFl()}><Btn label="Editar" variant="ghost" small onClick={() => setEditU({ ...u, seasons: [...(u.seasons || []).map(s => ({ ...s, ranges: [...(s.ranges || [])] }))] })} /><Btn label={u.active ? "Baja" : "Activar"} variant={u.active ? "danger" : "success"} small onClick={() => {
+            setUnits(us => us.map(x => x.id === u.id ? { ...x, active: !x.active } : x));
+            if (onSaveUnit) onSaveUnit({ ...u, active: !u.active });
+          }} /></td>
         </tr>);
       })} />
     </div>}
@@ -2158,6 +2195,104 @@ function Dashboard({ clients, reservations, payments, pp, promises, users }) {
     </div>
   </div>);
 }
+
+// ── MY ACCOUNT (GESTOR) ──────────────────────────────────────────────────────
+function MyAccountView({ cu, users, payments, pms, fxRate }) {
+  const userRecord = users.find(u => u.username === cu.username) || cu;
+  const sueldo = userRecord.salary || 0;
+  // Filtrar pagos del mes actual del gestor
+  const TOD2 = new Date();
+  const monthStart = new Date(TOD2.getFullYear(), TOD2.getMonth(), 1);
+  const myPayments = payments.filter(p => {
+    const procBy = p.processedBy || p.originatedBy;
+    if (procBy !== cu.username) return false;
+    if (!p.date) return false;
+    return new Date(p.date) >= monthStart;
+  });
+  const fx = fxRate?.rate || 17.5;
+  // Cobrado total en MXN
+  const cobradoMxn = myPayments.reduce((a, p) => a + (p.amount || 0), 0);
+  // Comisiones acumuladas: 1% prepago, 2% mantenimiento, 3% mora — sobre el monto cobrado neto en MXN
+  const comisiones = myPayments.reduce((a, p) => {
+    const mantNeto = (p.amountMant || 0) * fx; // amountMant viene en USD, convertir a MXN
+    const moraNeto = (p.amountMora || 0) * fx;
+    const isP = p.isPrepago;
+    const cMant = isP ? mantNeto * 0.01 : mantNeto * 0.02;
+    const cMora = moraNeto * 0.03;
+    return a + cMant + cMora;
+  }, 0);
+  // Costos financieros = sumar (cost_pct * monto cobrado) por método
+  const costosFin = myPayments.reduce((a, p) => {
+    const pm = pms.find(m => m.id === p.methodId || m.name === p.method);
+    const pct = (pm?.costPct || p.costPct || 0) / 100;
+    return a + (p.amount || 0) * pct;
+  }, 0);
+  // Costo total para la empresa
+  const costoTotal = sueldo + comisiones + costosFin;
+  const pctCosto = cobradoMxn > 0 ? (costoTotal / cobradoMxn) * 100 : 0;
+  return (<div style={{ padding: 20, color: T1 }}>
+    <h2 style={{ color: B, fontWeight: 700, marginBottom: 20 }}>Mi Estado de Cuenta — {userRecord.name || cu.username}</h2>
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 20 }}>
+      <div style={{ background: BG2, border: `1px solid ${BD}`, borderRadius: 8, padding: 14 }}>
+        <div style={{ fontSize: 9, color: T4, textTransform: "uppercase", marginBottom: 4 }}>Sueldo Mensual</div>
+        <div style={{ color: T1, fontWeight: 700, fontSize: 20 }}>{fMXN(sueldo)}</div>
+      </div>
+      <div style={{ background: BG2, border: `1px solid ${BD}`, borderRadius: 8, padding: 14 }}>
+        <div style={{ fontSize: 9, color: T4, textTransform: "uppercase", marginBottom: 4 }}>Comisiones del Mes</div>
+        <div style={{ color: G, fontWeight: 700, fontSize: 20 }}>{fMXN(comisiones)}</div>
+        <div style={{ fontSize: 9, color: T4, marginTop: 3 }}>1% prepago · 2% mant · 3% mora</div>
+      </div>
+      <div style={{ background: BG2, border: `1px solid ${BD}`, borderRadius: 8, padding: 14 }}>
+        <div style={{ fontSize: 9, color: T4, textTransform: "uppercase", marginBottom: 4 }}>Costos Financieros</div>
+        <div style={{ color: O, fontWeight: 700, fontSize: 20 }}>{fMXN(costosFin)}</div>
+        <div style={{ fontSize: 9, color: T4, marginTop: 3 }}>De medios usados en el mes</div>
+      </div>
+      <div style={{ background: BG2, border: `1px solid ${B}33`, borderRadius: 8, padding: 14 }}>
+        <div style={{ fontSize: 9, color: T4, textTransform: "uppercase", marginBottom: 4 }}>Cobrado en el Mes</div>
+        <div style={{ color: B, fontWeight: 700, fontSize: 20 }}>{fMXN(cobradoMxn)}</div>
+        <div style={{ fontSize: 9, color: T4, marginTop: 3 }}>{myPayments.length} pagos validados</div>
+      </div>
+    </div>
+    <div style={{ background: BG2, border: `1px solid ${BD}`, borderRadius: 8, padding: 18, marginBottom: 20 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div style={{ fontSize: 11, color: T3, textTransform: "uppercase", fontWeight: 700 }}>Costo Total para la Empresa</div>
+        <div style={{ color: pctCosto > 50 ? R : pctCosto > 30 ? Y : G, fontWeight: 800, fontSize: 28 }}>{fMXN(costoTotal)}</div>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 12 }}>
+        <div>
+          <div style={{ fontSize: 9, color: T4, marginBottom: 3 }}>Detalle del costo:</div>
+          <div style={{ fontSize: 11, color: T2 }}>Sueldo: <b>{fMXN(sueldo)}</b></div>
+          <div style={{ fontSize: 11, color: T2 }}>+ Comisiones: <b>{fMXN(comisiones)}</b></div>
+          <div style={{ fontSize: 11, color: T2 }}>+ Costos financieros: <b>{fMXN(costosFin)}</b></div>
+          <div style={{ fontSize: 11, color: B, fontWeight: 700, marginTop: 5 }}>= Total: {fMXN(costoTotal)}</div>
+        </div>
+        <div>
+          <div style={{ fontSize: 9, color: T4, marginBottom: 3 }}>% del cobrado que cuesta:</div>
+          <div style={{ color: pctCosto > 50 ? R : pctCosto > 30 ? Y : G, fontWeight: 800, fontSize: 32 }}>{pctCosto.toFixed(1)}%</div>
+          <div style={{ fontSize: 10, color: T4, marginTop: 3 }}>{costoTotal.toFixed(0)} / {cobradoMxn.toFixed(0)} × 100</div>
+        </div>
+      </div>
+    </div>
+    <div style={{ background: BG2, border: `1px solid ${BD}`, borderRadius: 8, padding: 18 }}>
+      <div style={{ fontSize: 11, color: T3, textTransform: "uppercase", fontWeight: 700, marginBottom: 10 }}>Pagos Procesados Este Mes</div>
+      {myPayments.length === 0 ? <div style={{ color: T4, fontSize: 11, textAlign: "center", padding: 20 }}>Sin pagos en el mes actual.</div> : (
+        <Tbl cols={["Fecha", "Cliente", "Concepto", "Monto", "Medio", "Comisión"]} rows={myPayments.map(p => {
+          const mantNeto = (p.amountMant || 0) * fx;
+          const moraNeto = (p.amountMora || 0) * fx;
+          const com = (p.isPrepago ? mantNeto * 0.01 : mantNeto * 0.02) + moraNeto * 0.03;
+          return (<tr key={p.id} style={{ borderBottom: `1px solid ${BG3}` }}>
+            <td style={tG3()}>{p.date}</td>
+            <td style={tW()}>{p.clientName}</td>
+            <td style={tG3()}>{p.isPrepago ? "Prepago" : (p.type === "maintenance" ? "Mantenimiento" : p.type)}</td>
+            <td style={tGb()}>{fMXN(p.amount)}</td>
+            <td style={tG3()}>{p.method || "—"}</td>
+            <td style={tBb()}>{fMXN(com)}</td>
+          </tr>);
+        })} />
+      )}
+    </div>
+  </div>);
+}
 // ── APP ROOT ─────────────────────────────────────────────────────────────────
 const MONTHS_ES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 export default function App() {
@@ -2203,6 +2338,9 @@ export default function App() {
         fetchPendingPayments(),
         fetchUsers(),
       ]);
+
+      const dbUts = await fetchUnitTypes();
+      if (dbUts.length > 0) setUts(dbUts);
 
       // Calcular occ en units desde reservaciones
       const unitsWithOcc = dbUnits.map(u => ({
@@ -2352,6 +2490,7 @@ export default function App() {
         maint_year: pp2.maintYear || null,
         maint_point_expiry: pp2.maintPointExpiry || null,
         is_prepago: pp2.isPrepago || false,
+        payment_method_id: pp2.methodId || null,
       };
       console.log('savePendingPayment payload:', JSON.stringify(dbPP, null, 2));
       await insertPendingPayment(dbPP);
@@ -2389,6 +2528,46 @@ export default function App() {
     } catch (e) {
       console.error('Error rechazando propuesta:', e);
       alert('Error rechazando propuesta: ' + (e.message || JSON.stringify(e)));
+    }
+  };
+
+  // Guardar/actualizar unidad
+  const saveUnit = async (u) => {
+    try {
+      if (u.id === "new" || !u.id || u.id > 1000000000) {
+        await insertUnit(u);
+      } else {
+        await updateUnit(u.id, u);
+      }
+      await loadAll();
+    } catch (e) {
+      console.error('Error guardando unidad:', e);
+      alert('Error guardando unidad: ' + (e.message || JSON.stringify(e)));
+    }
+  };
+
+  // Guardar tipo de unidad
+  const saveUnitType = async (ut) => {
+    try {
+      if (ut.id === "new" || !ut.id || ut.id > 1000000000) {
+        await insertUnitType(ut.name);
+      } else {
+        await updateUnitType(ut.id, ut.name);
+      }
+      await loadAll();
+    } catch (e) {
+      console.error('Error guardando tipo:', e);
+      alert('Error guardando tipo: ' + (e.message || JSON.stringify(e)));
+    }
+  };
+
+  const removeUnitType = async (id) => {
+    try {
+      await deleteUnitType(id);
+      await loadAll();
+    } catch (e) {
+      console.error('Error eliminando tipo:', e);
+      alert('Error eliminando tipo: ' + (e.message || JSON.stringify(e)));
     }
   };
 
@@ -2459,13 +2638,14 @@ export default function App() {
         {tab === "res" && <ReservationsView clients={clients} reservations={reservations} setReservations={setReservations} units={units} setUnits={setUnits} uts={uts} cu={cu} rc={rc} payments={payments} preselClientId={preselResClient} onClearPresel={() => setPreselResClient(null)} onSaveReservation={saveReservation} />}
         {tab === "col" && <CollectionsView clients={clients} payments={payments} pp={pp} promises={promises} setPromises={setPromises} cu={cu} fxRate={fxRate} onSavePromise={savePromise} />}
         {tab === "reports" && <ReportsView clients={clients} reservations={reservations} payments={payments} pp={pp} users={users} role={cu.role} courtesies={courtesies} rc={rc} />}
-        {tab === "config" && <ConfigView seasonOrder={seasonOrder} setSeasonOrder={setSeasonOrder} uts={uts} setUts={setUts} units={units} setUnits={setUnits} pp={pp} setPp={setPp} />}
+        {tab === "config" && <ConfigView seasonOrder={seasonOrder} setSeasonOrder={setSeasonOrder} uts={uts} setUts={setUts} units={units} setUnits={setUnits} pp={pp} setPp={setPp} onSaveUnit={saveUnit} onSaveUnitType={saveUnitType} onRemoveUnitType={removeUnitType} />}
         {tab === "pmethods" && <PayMethodsView pms={pms} setPms={setPms} />}
         {tab === "comp" && <CompView users={users} setUsers={setUsers} payments={payments} reservations={reservations} pp={pp} rc={rc} setRc={setRc} cr={cr} setCr={setCr} />}
         {tab === "users" && <UsersView cu={cu} users={users} setUsers={setUsers} rc={rc} />}
         {tab === "team" && <TeamView users={users} setUsers={setUsers} clients={clients} setClients={setClients} payments={payments} reservations={reservations} />}
         {tab === "contracts" && <ContractsView clients={clients} setClients={setClients} />}
         {tab === "courtesies" && <CourtesiesView clients={clients} setClients={setClients} courtesies={courtesies} setCourtesies={setCourtesies} pp={pp} cu={cu} />}
+        {tab === "ec" && <MyAccountView cu={cu} users={users} payments={payments} pms={pms} fxRate={fxRate} />}
         {tab === "ps" && <PointSalesView clients={clients} setClients={setClients} payments={payments} setPayments={setPayments} pp={pp} pms={pms} cu={cu} pendingSales={pendingSales} setPendingSales={setPendingSales} />}
       </div>
     </div>

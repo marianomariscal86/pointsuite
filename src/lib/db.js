@@ -88,18 +88,15 @@ export async function insertPayment(p) {
 }
 
 function mapPayment(p) {
-  const totalMxn = parseFloat(p.total_mxn || 0);
-  const totalUsd = parseFloat(p.total_usd || 0);
-  // Si total_mxn es 0 pero total_usd no, calcular usando los montos individuales
   return {
     id: p.id,
     clientId: p.client_id,
     clientName: p.clients?.full_name,
     contractNo: p.clients?.contract_no,
     date: p.payment_date,
-    amount: totalMxn || (totalUsd * 17.5),
-    amountMant: parseFloat(p.maint_amount_usd || 0),  // en USD
-    amountMora: parseFloat(p.mora_amount_usd || 0),  // en USD
+    amount: parseFloat(p.total_mxn || 0),
+    amountMant: parseFloat(p.maint_amount_usd || 0),
+    amountMora: parseFloat(p.mora_amount_usd || 0),
     discountMant: parseFloat(p.maint_discount_usd || 0),
     discountMora: parseFloat(p.mora_discount_usd || 0),
     points: p.points_credited || 0,
@@ -160,10 +157,72 @@ export async function fetchUnits() {
     id: u.id,
     name: u.name,
     typeId: u.type_id,
-    active: u.active,
-    occ: [], // se calcula desde reservaciones
+    location: u.location || '',
+    active: u.active !== false,
+    occ: [],
     seasons: u.unit_season_ranges || [],
   }));
+}
+
+export async function insertUnit(u) {
+  const { data, error } = await supabase
+    .from('units')
+    .insert([{
+      name: u.name,
+      type_id: u.typeId,
+      location: u.location || '',
+      active: u.active !== false,
+    }])
+    .select().single();
+  if (error) throw error;
+  return data;
+}
+
+export async function updateUnit(id, fields) {
+  const dbFields = {};
+  if (fields.name !== undefined) dbFields.name = fields.name;
+  if (fields.typeId !== undefined) dbFields.type_id = fields.typeId;
+  if (fields.location !== undefined) dbFields.location = fields.location;
+  if (fields.active !== undefined) dbFields.active = fields.active;
+  const { error } = await supabase
+    .from('units')
+    .update(dbFields)
+    .eq('id', id);
+  if (error) throw error;
+}
+
+export async function fetchUnitTypes() {
+  const { data, error } = await supabase
+    .from('unit_types')
+    .select('*')
+    .order('id');
+  if (error) return [];
+  return data.map(t => ({ id: t.id, name: t.name }));
+}
+
+export async function insertUnitType(name) {
+  const { data, error } = await supabase
+    .from('unit_types')
+    .insert([{ name }])
+    .select().single();
+  if (error) throw error;
+  return data;
+}
+
+export async function updateUnitType(id, name) {
+  const { error } = await supabase
+    .from('unit_types')
+    .update({ name })
+    .eq('id', id);
+  if (error) throw error;
+}
+
+export async function deleteUnitType(id) {
+  const { error } = await supabase
+    .from('unit_types')
+    .delete()
+    .eq('id', id);
+  if (error) throw error;
 }
 
 // ─── TIPO DE CAMBIO ───────────────────────────────────────
@@ -195,7 +254,7 @@ export async function fetchPaymentMethods() {
     .eq('is_active', true)
     .order('id');
   if (error) throw error;
-  return data.map(m => ({ id: m.id, name: m.name, costPct: parseFloat(m.cost_pct || 0), active: true }));
+  return data.map(m => ({ id: m.id, name: m.name, costPct: parseFloat(m.cost_pct || 0) }));
 }
 
 // ─── PROMESAS ─────────────────────────────────────────────
@@ -251,13 +310,12 @@ export async function fetchPendingPayments() {
     clientName: p.clients?.full_name,
     contractNo: p.clients?.contract_no,
     ptype: p.concept,
-    // Los montos vienen en USD desde la DB, la app los convierte a MXN al renderizar
+    // Los montos vienen en USD; la app los convierte a MXN al cargar usando fxRate
     mantAmtUsd: parseFloat(p.maint_amount_usd || 0),
     moraAmtUsd: parseFloat(p.mora_amount_usd || 0),
     mantDiscUsd: parseFloat(p.maint_discount_usd || 0),
     moraDiscUsd: parseFloat(p.mora_discount_usd || 0),
     totalUsd: parseFloat(p.total_usd || 0),
-    // Estos campos se llenan al cargar usando el fxRate actual
     mantAmt: 0, moraAmt: 0, mantDisc: 0, moraDisc: 0, totalACobrar: 0,
     submittedBy: p.users?.username,
     submittedAt: p.submitted_at,
@@ -266,6 +324,8 @@ export async function fetchPendingPayments() {
     maintYear: p.maint_year,
     maintPointExpiry: p.maint_point_expiry,
     isPrepago: p.is_prepago,
+    methodId: p.payment_method_id,
+    methodName: null,
   }));
 }
 
