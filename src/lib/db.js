@@ -389,3 +389,36 @@ export async function fetchUsers() {
     commissions: { collection: 0.02 },
   }));
 }
+
+export async function updateUser(id, fields) {
+  const dbFields = {};
+  if (fields.salary !== undefined) dbFields.monthly_salary = fields.salary;
+  if (fields.name !== undefined) dbFields.full_name = fields.name;
+  if (fields.role !== undefined) dbFields.role = fields.role;
+  if (fields.color !== undefined) dbFields.color_hex = fields.color;
+  if (fields.active !== undefined) dbFields.is_active = fields.active;
+  if (fields.password !== undefined) dbFields.password_hash = fields.password;
+  if (fields.username !== undefined) dbFields.username = fields.username;
+  const { error } = await supabase
+    .from('users')
+    .update(dbFields)
+    .eq('id', id);
+  if (error) throw error;
+}
+
+export async function insertUser(u) {
+  const { data, error } = await supabase
+    .from('users')
+    .insert([{
+      username: u.username,
+      password_hash: u.password || 'admin',
+      role: u.role,
+      full_name: u.name,
+      color_hex: u.color || '#3B82F6',
+      monthly_salary: u.salary || 0,
+      is_active: u.active !== false,
+    }])
+    .select().single();
+  if (error) throw error;
+  return data;
+}

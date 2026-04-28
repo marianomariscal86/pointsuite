@@ -10,7 +10,7 @@ import {
   fetchPaymentMethods, insertPaymentMethod, updatePaymentMethod,
   fetchPromises, insertPromise, updatePromise,
   fetchPendingPayments, insertPendingPayment, updatePendingPayment,
-  fetchUsers,
+  fetchUsers, updateUser, insertUser,
 } from './lib/db.js';
 const BG = "#030912", BG2 = "#060d19", BG3 = "#0b1628", BD = "#18263d";
 const T1 = "#e2e8f0", T2 = "#8aa8c0", T3 = "#2e4a66", T4 = "#1e3558", T5 = "#2d4563"; // Corregido: T5 definido aquí
@@ -1925,11 +1925,19 @@ function PayMethodsView({ pms, setPms, onSavePm }) {
   </div>);
 }
 // ── COMPENSATION ─────────────────────────────────────────────────────────────
-function CompView({ users, setUsers, payments, reservations, pp, rc, setRc, cr, setCr }) {
+function CompView({ users, setUsers, payments, reservations, pp, rc, setRc, cr, setCr, onSaveUser }) {
   const [editId, setEditId] = useState(null), [form, setForm] = useState({}), [ctab, setCtab] = useState("personal");
   const setF = k => v => setForm(f => ({ ...f, [k]: v }));
   const staff = users.filter(u => u.role !== "superadmin");
-  const save = () => { setUsers(us => us.map(u => u.id === editId ? { ...u, salary: +(form.salary || 0) } : u)); setEditId(null); };
+  const save = () => {
+    const newSalary = +(form.salary || 0);
+    setUsers(us => us.map(u => u.id === editId ? { ...u, salary: newSalary } : u));
+    if (onSaveUser) {
+      const userObj = users.find(u => u.id === editId);
+      if (userObj) onSaveUser({ id: editId, salary: newSalary });
+    }
+    setEditId(null);
+  };
   return (<div>
     {editId && <Modal title="Editar Compensación" onClose={() => setEditId(null)}>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}><Inp label="Sueldo mensual ($)" value={form.salary || 0} onChange={v => setF("salary")(+v)} type="number" /></div><div style={{ background: P + "12", borderRadius: 6, padding: "7px 9px", marginTop: 8, fontSize: 10, color: T3 }}>Las comisiones por cobro se configuran <b style={{ color: P }}>por concepto</b>, no por persona. Ve a la pestaña "Por Concepto".</div>
@@ -1977,11 +1985,22 @@ function CompView({ users, setUsers, payments, reservations, pp, rc, setRc, cr, 
   </div>);
 }
 // ── USERS / TEAM / CONTRACTS / COURTESIES ────────────────────────────────────
-function UsersView({ cu, users, setUsers, rc }) {
+function UsersView({ cu, users, setUsers, rc, onSaveUser }) {
   const [modal, setModal] = useState(null), [form, setForm] = useState({});
   const setF = k => v => setForm(f => ({ ...f, [k]: v }));
   const pD = { superadmin: "Todo", admin: "Config+Reportes+Equipo+Contratos", cajero: "Caja", gestor: "Cobranzas+Reservaciones+Venta Pts" };
-  const save = () => { if (modal === "new") setUsers(us => [...us, { ...form, id: Date.now(), active: true, salary: +(form.salary || 0), commissions: { collection: 0 } }]); else setUsers(us => us.map(u => u.id === modal.id ? { ...u, ...form, salary: +(form.salary || 0) } : u)); setModal(null); };
+  const save = () => {
+    const isNew = modal === "new";
+    const userObj = { ...form, salary: +(form.salary || 0), active: form.active !== false };
+    if (isNew) {
+      setUsers(us => [...us, { ...userObj, id: Date.now(), commissions: { collection: 0 } }]);
+      if (onSaveUser) onSaveUser(userObj);
+    } else {
+      setUsers(us => us.map(u => u.id === modal.id ? { ...u, ...userObj } : u));
+      if (onSaveUser) onSaveUser({ ...userObj, id: modal.id });
+    }
+    setModal(null);
+  };
   return (<div>
     {modal && <Modal title={modal === "new" ? "Nuevo Usuario" : "Editar Usuario"} onClose={() => setModal(null)}>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
@@ -2003,7 +2022,10 @@ function UsersView({ cu, users, setUsers, rc }) {
       <td style={td()}><RBdg r={u.role} /></td>
       <td style={tT2()}>{f$(u.salary || 0)}</td>
       <td style={td()}><Bdg l={u.active === false ? "Cancelado" : "Active"} /></td>
-      <td style={tFl()}><Btn label="Editar" variant="ghost" small onClick={() => { setForm({ ...u }); setModal(u); }} />{u.id !== cu.id && <Btn label={u.active === false ? "Activar" : "Baja"} variant={u.active === false ? "success" : "danger"} small onClick={() => setUsers(us => us.map(x => x.id === u.id ? { ...x, active: !x.active } : x))} />}</td>
+      <td style={tFl()}><Btn label="Editar" variant="ghost" small onClick={() => { setForm({ ...u }); setModal(u); }} />{u.id !== cu.id && <Btn label={u.active === false ? "Activar" : "Baja"} variant={u.active === false ? "success" : "danger"} small onClick={() => {
+        setUsers(us => us.map(x => x.id === u.id ? { ...x, active: !x.active } : x));
+        if (onSaveUser) onSaveUser({ id: u.id, active: !u.active });
+      }} />}</td>
     </tr>))} />
   </div>);
 }
@@ -2618,6 +2640,21 @@ export default function App() {
     }
   };
 
+  // Guardar usuario (sueldo, datos personales, password, etc.)
+  const saveUser = async (u) => {
+    try {
+      if (!u.id || u.id > 1000000000) {
+        await insertUser(u);
+      } else {
+        await updateUser(u.id, u);
+      }
+      await loadAll();
+    } catch (e) {
+      console.error('Error guardando usuario:', e);
+      alert('Error guardando usuario: ' + (e.message || JSON.stringify(e)));
+    }
+  };
+
   const login = u => { setCu(u); setTab(RT[u.role][0]); };
   const logout = () => { setCu(null); setTab(null); setClients([]); setPayments([]); };
 
@@ -2687,8 +2724,8 @@ export default function App() {
         {tab === "reports" && <ReportsView clients={clients} reservations={reservations} payments={payments} pp={pp} users={users} role={cu.role} courtesies={courtesies} rc={rc} />}
         {tab === "config" && <ConfigView seasonOrder={seasonOrder} setSeasonOrder={setSeasonOrder} uts={uts} setUts={setUts} units={units} setUnits={setUnits} pp={pp} setPp={setPp} onSaveUnit={saveUnit} onSaveUnitType={saveUnitType} onRemoveUnitType={removeUnitType} />}
         {tab === "pmethods" && <PayMethodsView pms={pms} setPms={setPms} onSavePm={savePaymentMethod} />}
-        {tab === "comp" && <CompView users={users} setUsers={setUsers} payments={payments} reservations={reservations} pp={pp} rc={rc} setRc={setRc} cr={cr} setCr={setCr} />}
-        {tab === "users" && <UsersView cu={cu} users={users} setUsers={setUsers} rc={rc} />}
+        {tab === "comp" && <CompView users={users} setUsers={setUsers} payments={payments} reservations={reservations} pp={pp} rc={rc} setRc={setRc} cr={cr} setCr={setCr} onSaveUser={saveUser} />}
+        {tab === "users" && <UsersView cu={cu} users={users} setUsers={setUsers} rc={rc} onSaveUser={saveUser} />}
         {tab === "team" && <TeamView users={users} setUsers={setUsers} clients={clients} setClients={setClients} payments={payments} reservations={reservations} />}
         {tab === "contracts" && <ContractsView clients={clients} setClients={setClients} />}
         {tab === "courtesies" && <CourtesiesView clients={clients} setClients={setClients} courtesies={courtesies} setCourtesies={setCourtesies} pp={pp} cu={cu} />}
