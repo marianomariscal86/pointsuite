@@ -667,6 +667,12 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
   const submit = () => {
     if (!client || (mantAmtN <= 0 && moraAmtN <= 0)) return;
     const isPrepagoPay = ptype === "prepago_maintenance";
+    if (isPrepagoPay) {
+      const montoCompleto = Math.round(client.annualPoints * pp);
+      const descuento = Math.max(0, montoCompleto - mantAmtN);
+      if (descuento > montoCompleto * 0.20) return; // Bloqueo descuento >20%
+      if (mantAmtN > montoCompleto) return; // No se puede cobrar más que el total
+    }
     // Para prepago, no hay descuento sobre saldo (balance=0), se valida diferente
     if (!isPrepagoPay) {
       const saldoMXN = client.balance;
@@ -871,8 +877,18 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
               ✓ Los {fP(client.annualPoints)} estarán disponibles <b>inmediatamente</b> para hacer reservaciones y vencerán el <b>{maintPointExpiry}</b>.
             </div>
             <Inp label={`Monto a cobrar (MXN $) — Mantenimiento Año ${nextMaintYear}`} value={mantAmt} onChange={setMantAmt} type="number" />
-            {mantAmtN > 0 && mantAmtN !== montoCompleto && <div style={{ fontSize: 9, color: Y, marginTop: 3 }}>
-              ⚠ El monto completo es {fMXN(montoCompleto)}. Si cobras menos, se aplicará como pago parcial.
+            {mantAmtN > 0 && mantAmtN < montoCompleto && (() => {
+              const descuento = montoCompleto - mantAmtN;
+              const maxDesc = montoCompleto * 0.20;
+              const exceso = descuento > maxDesc;
+              return <div style={{ fontSize: 9, color: exceso ? R : Y, marginTop: 3, fontWeight: exceso ? 700 : 500 }}>
+                {exceso
+                  ? `⛔ El descuento (${fMXN(descuento)}) excede el máximo permitido (20% = ${fMXN(maxDesc)}).`
+                  : `⚠ El monto completo es ${fMXN(montoCompleto)}. Descuento aplicado: ${fMXN(descuento)} (${((descuento / montoCompleto) * 100).toFixed(1)}%).`}
+              </div>;
+            })()}
+            {mantAmtN > montoCompleto && <div style={{ fontSize: 9, color: R, marginTop: 3, fontWeight: 700 }}>
+              ⛔ El monto excede el costo del mantenimiento ({fMXN(montoCompleto)}).
             </div>}
           </div>;
         })()}
@@ -981,7 +997,11 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
       {(() => {
         const isPrepagoPay = ptype === "prepago_maintenance";
         if (isPrepagoPay) {
-          return <Btn label={`⭐ Enviar Prepago Año ${maintYear} a Caja`} variant="success" onClick={submit} disabled={!client || mantAmtN <= 0} />;
+          const montoCompleto = client ? Math.round(client.annualPoints * pp) : 0;
+          const descuento = Math.max(0, montoCompleto - mantAmtN);
+          const excedeDesc = descuento > montoCompleto * 0.20;
+          const excedeMax = mantAmtN > montoCompleto;
+          return <Btn label={`⭐ Enviar Prepago Año ${maintYear} a Caja`} variant="success" onClick={submit} disabled={!client || mantAmtN <= 0 || excedeDesc || excedeMax} />;
         }
         const saldoMXN = client?.balance || 0;
         const moraMXN = interest;
@@ -1085,7 +1105,7 @@ function ConfDoc({ r, onClose }) {
     </div>
   </Modal>);
 }
-function ResModal({ clients, units, uts, reservations, onSave, onClose, cu, rc, presel }) {
+function ResModal({ clients, units, uts, reservations, onSave, onClose, cu, rc, presel, payments }) {
   const [sid, setSid] = useState(presel || null), [uid, setUid] = useState(units.filter(u => u.active)[0]?.id || ""), [ci, setCi] = useState(""), [co, setCo] = useState("");
   const unit = units.find(u => u.id === +uid), ut = uts.find(t => t.id === unit?.typeId), client = clients.find(c => c.id === sid), season = detS(ci, unit);
   const nights = ci && co ? Math.max(0, Math.round((new Date(co) - new Date(ci)) / 86400000)) : 0;
@@ -1095,7 +1115,9 @@ function ResModal({ clients, units, uts, reservations, onSave, onClose, cu, rc, 
   const savedA = client ? (client.savedPoints || []).filter(sp => new Date(sp.expiryDate) > new Date()).reduce((a, sp) => a + sp.points, 0) : 0;
   const avail = client ? client.paidPoints - usedP + savedA : 0;
   const conflict = (unit?.occ || []).some(o => { const oi = new Date(o.ci), oo = new Date(o.co), ni = new Date(ci), no = new Date(co); return !(no <= oi || ni >= oo); });
-  const delinq = client ? dOvr(client.dueDate) > 0 : false;
+  // Morosidad real: hay años de mantenimiento sin pagar hasta el año actual
+  const cls = client ? getClientStatus(client, payments || []) : null;
+  const delinq = cls ? !["Al corriente", "Promoción Prepago"].includes(cls.l) : false;
   const canBook = nights > 0 && client && ptTotal <= avail && unit && client.contractStatus === "Active" && !delinq && !conflict;
   return (<Modal title="Nueva Reservación" onClose={onClose} wide>
     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
@@ -1152,7 +1174,7 @@ function ReservationsView({ clients, reservations, setReservations, units, setUn
   };
   const filtered = reservations.filter(r => filt === "All" || r.status === filt || r.clientName === filt);
   return (<div>
-    {modal && <ResModal clients={availC.length ? availC : clients} units={units} uts={uts} reservations={reservations} onSave={save} onClose={() => setModal(false)} cu={cu} rc={rc} presel={presel} />}
+    {modal && <ResModal clients={availC.length ? availC : clients} units={units} uts={uts} reservations={reservations} onSave={save} onClose={() => setModal(false)} cu={cu} rc={rc} presel={presel} payments={payments} />}
     {confDoc && <ConfDoc r={confDoc} onClose={() => setConfDoc(null)} />}
     <div style={{ display: "flex", gap: 5, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
       {[["avail", "Puntos Disponibles"], ["list", "Todas las Reservaciones"]].map(([id, l]) => (
