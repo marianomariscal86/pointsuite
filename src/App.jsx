@@ -726,10 +726,17 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
     // Guardar en Supabase
     if (onSavePayment) {
       const clientAfter = clients.find(c => c.id === pp2.clientId);
+      // Calcular balance USD nuevo: el cliente tiene balance en MXN en la app, convertir a USD para DB
+      // mantPaid es lo que cobró menos descuento (MXN), restar al balance MXN y convertir a USD
+      const newBalanceMxn = Math.max(0, (clientAfter?.balance || 0) - (pp2.mantAmt - pp2.mantDisc));
+      const newBalanceUsd = newBalanceMxn / (fxRate?.rate || 17.5);
+      const newPaidPoints = (clientAfter?.paidPoints || 0) + (ptsFinal || 0);
+      // El nuevo status se recalcula en el siguiente loadAll(), pero damos uno tentativo
+      const newStatus = newBalanceUsd === 0 ? 'Active' : (newBalanceUsd > 0 && (clientAfter?.paidPoints || 0) > 0 ? 'Partial' : 'Delinquent');
       onSavePayment(payment, clientAfter ? {
-        paidPoints: clientAfter.paidPoints + (ptsFinal || 0),
-        balance: Math.max(0, clientAfter.balance - (pp2.mantAmt - pp2.mantDisc)),
-        status: clientAfter.status,
+        paidPoints: newPaidPoints,
+        balance: newBalanceUsd,
+        status: newStatus,
       } : null).catch(console.error);
     }
     // Actualizar cliente según tipo
@@ -2275,6 +2282,13 @@ export default function App() {
         is_deleted: false,
       };
       await insertPayment(dbPayment);
+      // Marcar pending_payment como 'validated' en DB
+      if (paymentObj.pendingPaymentId && typeof paymentObj.pendingPaymentId === 'number' && paymentObj.pendingPaymentId < 100000000) {
+        try {
+          await updatePendingPayment(paymentObj.pendingPaymentId, { status: 'validated' });
+          console.log('Pending payment marked as validated:', paymentObj.pendingPaymentId);
+        } catch (e) { console.error('Error updating pending status:', e); }
+      }
       // Actualizar cliente en DB
       if (clientUpdates) {
         await updateClient(paymentObj.clientId, {
@@ -2294,16 +2308,18 @@ export default function App() {
   // Guardar reservación
   const saveReservation = async (resObj) => {
     try {
+      const dbUser = users.find(u => u.username === cu?.username);
+      const userId = dbUser?.id || null;
       await insertReservation({
         client_id: resObj.clientId,
         unit_id: resObj.unitId,
-        season: resObj.season,
+        season: resObj.seasonId || resObj.season,
         check_in: resObj.checkIn,
         check_out: resObj.checkOut,
         nights: resObj.nights,
         points_used: resObj.pointsUsed,
         status: resObj.status || 'Confirmed',
-        processed_by: cu?.id,
+        processed_by: userId,
       });
       await loadAll();
     } catch (e) {
