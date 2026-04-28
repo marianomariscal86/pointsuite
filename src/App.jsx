@@ -7,7 +7,7 @@ import {
   fetchUnits, insertUnit, updateUnit,
   fetchUnitTypes, insertUnitType, updateUnitType, deleteUnitType,
   fetchFxRate, insertFxRate,
-  fetchPaymentMethods,
+  fetchPaymentMethods, insertPaymentMethod, updatePaymentMethod,
   fetchPromises, insertPromise, updatePromise,
   fetchPendingPayments, insertPendingPayment, updatePendingPayment,
   fetchUsers,
@@ -39,8 +39,8 @@ function getPaidPtsByYear(client, payments) {
   const annualPts = client.annualPoints || 0;
   if (annualPts === 0) return paidByYear;
 
-  // Inicializar todos los años con 0 desde el inicio del contrato
-  for (let yr = startYear; yr <= CY + 5; yr++) paidByYear[yr] = 0;
+  // Inicializar todos los años con 0 desde el inicio del contrato hasta CY+1 (límite máximo de prepago)
+  for (let yr = startYear; yr <= CY + 1; yr++) paidByYear[yr] = 0;
 
   // Procesar pagos ordenados por fecha (más antiguo primero)
   const maintPays = payments
@@ -52,8 +52,8 @@ function getPaidPtsByYear(client, payments) {
     // Empezar desde el año del pago si está especificado, si no, desde el año más antiguo no pagado
     let startFromYear = p.maintYear || (p.date ? new Date(p.date).getFullYear() : startYear);
     if (startFromYear < startYear) startFromYear = startYear;
-    // Aplicar al año del pago primero, luego avanzar a los siguientes
-    for (let yr = startFromYear; yr <= CY + 5 && remaining > 0; yr++) {
+    // Aplicar al año del pago primero, luego avanzar a los siguientes (hasta CY+1 máximo)
+    for (let yr = startFromYear; yr <= CY + 1 && remaining > 0; yr++) {
       const space = annualPts - (paidByYear[yr] || 0);
       if (space > 0) {
         const apply = Math.min(remaining, space);
@@ -74,7 +74,8 @@ function getMaintYear(client, payments) {
   for (let yr = startYear; yr <= CY; yr++) {
     if ((paidByYear[yr] || 0) < annualPts) return yr;
   }
-  // Todos los años hasta CY están pagados → siguiente año (prepago)
+  // Todos los años hasta CY están pagados; verificar si CY+1 ya está pagado (yaPrepagado)
+  if ((paidByYear[CY + 1] || 0) >= annualPts) return CY + 2; // marca "ya prepagado" devolviendo > CY+1
   return CY + 1;
 }
 function getMaintPointExpiry(maintYear) {
@@ -654,13 +655,20 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
   const maintYear = client ? getMaintYear(client, payments) : CY;
   // Es prepago SOLO si el mantenimiento del año en curso está completamente pagado
   // y por lo tanto el siguiente pago corresponde al año siguiente
-  const isPrepago = client ? maintYear > CY : false;
+  // Es prepago SOLO si maintYear es exactamente CY+1 (siguiente año, no más allá).
+  // Si maintYear > CY+1 significa que ya pagó el siguiente año y no se permite prepagar más.
+  const isPrepago = client ? maintYear === CY + 1 : false;
+  const yaPrepagado = client ? maintYear > CY + 1 : false;
   const maintPointExpiry = getMaintPointExpiry(maintYear);
   const preloadedMantAmt = client ? Math.round(client.annualPoints * pp) : 0;
 
   // Auto-precargar monto y tipo cuando se selecciona un cliente
   useEffect(() => {
     if (!client) { setMantAmt(""); setMoraAmt(""); setPtype("maintenance"); return; }
+    if (yaPrepagado) {
+      setPtype("maintenance"); setMantAmt(""); setMoraAmt("");
+      return;
+    }
     if (isPrepago) {
       setPtype("prepago_maintenance");
       setMantAmt(String(preloadedMantAmt));
@@ -672,6 +680,7 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
 
   const submit = () => {
     if (!client || (mantAmtN <= 0 && moraAmtN <= 0)) return;
+    if (yaPrepagado) return; // No permitir más pagos si ya prepagó CY+1
     if (!proposalMid) return; // Debe tener medio de pago seleccionado
     const isPrepagoPay = ptype === "prepago_maintenance";
     // Descuento máximo permitido depende del tipo de pago y el medio
@@ -852,6 +861,12 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
             <div style={{ fontSize: 9, color: T4, marginTop: 5 }}>TC: ${fx2} MXN/USD · <Bdg l={cls.l} /></div>
           </div>;
         })()}
+        {/* Mensaje cuando el cliente ya tiene prepagado todo lo que puede */}
+        {client && yaPrepagado && <div style={{ background: G + "15", border: `1px solid ${G}44`, borderRadius: 8, padding: "12px 14px", marginBottom: 8 }}>
+          <div style={{ fontSize: 11, color: G, fontWeight: 800, marginBottom: 4 }}>✓ Cliente al corriente con prepago aplicado</div>
+          <div style={{ fontSize: 9, color: T3 }}>Este cliente ya tiene pagado el mantenimiento del año en curso ({CY}) y el siguiente ({CY + 1}). No se permite procesar más pagos de mantenimiento adelantado.</div>
+        </div>}
+
         {/* Selector de concepto — prepago_maintenance solo visible para clientes en Promoción Prepago */}
         <Inp
           label="Concepto"
@@ -1874,10 +1889,20 @@ function ConfigView({ seasonOrder, setSeasonOrder, uts, setUts, units, setUnits,
   </div>);
 }
 // ── PAYMENT METHODS ──────────────────────────────────────────────────────────
-function PayMethodsView({ pms, setPms }) {
+function PayMethodsView({ pms, setPms, onSavePm }) {
   const [modal, setModal] = useState(null), [form, setForm] = useState({});
   const setF = k => v => setForm(f => ({ ...f, [k]: v }));
-  const save = () => { if (modal === "new") setPms(ms => [...ms, { ...form, id: Date.now(), costPct: +(form.costPct || 0), active: true }]); else setPms(ms => ms.map(m => m.id === modal.id ? { ...m, ...form, costPct: +(form.costPct || 0) } : m)); setModal(null); };
+  const save = () => {
+    const obj = { ...form, costPct: +(form.costPct || 0), active: form.active !== false };
+    if (modal === "new") {
+      setPms(ms => [...ms, { ...obj, id: Date.now() }]);
+      if (onSavePm) onSavePm(obj);
+    } else {
+      setPms(ms => ms.map(m => m.id === modal.id ? { ...m, ...obj } : m));
+      if (onSavePm) onSavePm({ ...obj, id: modal.id });
+    }
+    setModal(null);
+  };
   return (<div>
     {modal && <Modal title="Medio de Pago" onClose={() => setModal(null)}>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}><div style={{ gridColumn: "1/-1" }}><Inp label="Nombre" value={form.name || ""} onChange={setF("name")} /></div><Inp label="Costo por tx (%)" value={form.costPct || 0} onChange={v => setF("costPct")(+v)} type="number" /><Inp label="Estado" value={form.active ? "si" : "no"} onChange={v => setF("active")(v === "si")} opts={[{ v: "si", l: "Activo" }, { v: "no", l: "Inactivo" }]} /></div>
@@ -1892,7 +1917,10 @@ function PayMethodsView({ pms, setPms }) {
       <td style={tW()}>{m.name}</td>
       <td style={td()}><div style={{ display: "flex", alignItems: "center", gap: 7 }}><div style={{ width: Math.round(m.costPct / 4 * 50), height: 4, background: Y, borderRadius: 3, minWidth: 4 }} /><span style={{ color: Y, fontWeight: 700 }}>{m.costPct}%</span></div></td>
       <td style={td()}><Bdg l={m.active ? "Active" : "Cancelado"} /></td>
-      <td style={tFl()}><Btn label="Editar" variant="ghost" small onClick={() => { setForm({ ...m }); setModal(m); }} /><Btn label={m.active ? "Desact." : "Activar"} variant={m.active ? "danger" : "success"} small onClick={() => setPms(ms => ms.map(x => x.id === m.id ? { ...x, active: !x.active } : x))} /></td>
+      <td style={tFl()}><Btn label="Editar" variant="ghost" small onClick={() => { setForm({ ...m }); setModal(m); }} /><Btn label={m.active ? "Desact." : "Activar"} variant={m.active ? "danger" : "success"} small onClick={() => {
+        setPms(ms => ms.map(x => x.id === m.id ? { ...x, active: !x.active } : x));
+        if (onSavePm) onSavePm({ ...m, active: !m.active });
+      }} /></td>
     </tr>))} />
   </div>);
 }
@@ -2204,27 +2232,24 @@ function MyAccountView({ cu, users, payments, pms, fxRate }) {
   const TOD2 = new Date();
   const monthStart = new Date(TOD2.getFullYear(), TOD2.getMonth(), 1);
   const myPayments = payments.filter(p => {
-    const procBy = p.processedBy || p.originatedBy;
+    const procBy = p.originatedBy || p.processedBy;
     if (procBy !== cu.username) return false;
     if (!p.date) return false;
     return new Date(p.date) >= monthStart;
   });
   const fx = fxRate?.rate || 17.5;
-  // Cobrado total en MXN
   const cobradoMxn = myPayments.reduce((a, p) => a + (p.amount || 0), 0);
-  // Comisiones acumuladas: 1% prepago, 2% mantenimiento, 3% mora — sobre el monto cobrado neto en MXN
+  // Comisiones
   const comisiones = myPayments.reduce((a, p) => {
-    const mantNeto = (p.amountMant || 0) * fx; // amountMant viene en USD, convertir a MXN
+    const mantNeto = (p.amountMant || 0) * fx;
     const moraNeto = (p.amountMora || 0) * fx;
     const isP = p.isPrepago;
-    const cMant = isP ? mantNeto * 0.01 : mantNeto * 0.02;
-    const cMora = moraNeto * 0.03;
-    return a + cMant + cMora;
+    return a + (isP ? mantNeto * 0.01 : mantNeto * 0.02) + moraNeto * 0.03;
   }, 0);
-  // Costos financieros = sumar (cost_pct * monto cobrado) por método
+  // Costos financieros
   const costosFin = myPayments.reduce((a, p) => {
-    const pm = pms.find(m => m.id === p.methodId || m.name === p.method);
-    const pct = (pm?.costPct || p.costPct || 0) / 100;
+    const pm = pms.find(m => m.id === p.methodId);
+    const pct = (pm?.costPct || 0) / 100;
     return a + (p.amount || 0) * pct;
   }, 0);
   // Costo total para la empresa
@@ -2280,12 +2305,13 @@ function MyAccountView({ cu, users, payments, pms, fxRate }) {
           const mantNeto = (p.amountMant || 0) * fx;
           const moraNeto = (p.amountMora || 0) * fx;
           const com = (p.isPrepago ? mantNeto * 0.01 : mantNeto * 0.02) + moraNeto * 0.03;
+          const pmName = pms.find(m => m.id === p.methodId)?.name || p.method || "—";
           return (<tr key={p.id} style={{ borderBottom: `1px solid ${BG3}` }}>
             <td style={tG3()}>{p.date}</td>
             <td style={tW()}>{p.clientName}</td>
             <td style={tG3()}>{p.isPrepago ? "Prepago" : (p.type === "maintenance" ? "Mantenimiento" : p.type)}</td>
             <td style={tGb()}>{fMXN(p.amount)}</td>
-            <td style={tG3()}>{p.method || "—"}</td>
+            <td style={tG3()}>{pmName}</td>
             <td style={tBb()}>{fMXN(com)}</td>
           </tr>);
         })} />
@@ -2350,13 +2376,19 @@ export default function App() {
           .map(r => ({ ci: r.checkIn, co: r.checkOut }))
       }));
 
-      if (dbClients.length > 0) setClients(dbClients);
-      else setClients(INIT_C); // fallback a datos demo si DB vacía
-
       if (dbPayments.length > 0) setPayments(dbPayments);
       if (dbReservations.length > 0) setReservations(dbReservations);
       if (unitsWithOcc.length > 0) setUnits(unitsWithOcc);
       else setUnits(INIT_UNITS);
+
+      // Calcular saldo dinámico de cada cliente desde años pendientes (en MXN, usando pp y fx)
+      const fxForBalance = dbFxRate?.rate || 17.5;
+      const dynClients = (dbClients.length > 0 ? dbClients : INIT_C).map(c => {
+        const desg = getMaintDesglose(c, dbPayments, pp);
+        const dyn = desg.reduce((a, d) => a + d.pendienteMXN, 0);
+        return { ...c, balance: dyn };
+      });
+      setClients(dynClients);
 
       setFxRate(dbFxRate);
       if (dbPms.length > 0) setPms(dbPms);
@@ -2571,6 +2603,21 @@ export default function App() {
     }
   };
 
+  // Guardar medio de pago
+  const savePaymentMethod = async (pm) => {
+    try {
+      if (!pm.id || pm.id > 1000000000) {
+        await insertPaymentMethod(pm);
+      } else {
+        await updatePaymentMethod(pm.id, pm);
+      }
+      await loadAll();
+    } catch (e) {
+      console.error('Error guardando medio de pago:', e);
+      alert('Error guardando medio de pago: ' + (e.message || JSON.stringify(e)));
+    }
+  };
+
   const login = u => { setCu(u); setTab(RT[u.role][0]); };
   const logout = () => { setCu(null); setTab(null); setClients([]); setPayments([]); };
 
@@ -2639,7 +2686,7 @@ export default function App() {
         {tab === "col" && <CollectionsView clients={clients} payments={payments} pp={pp} promises={promises} setPromises={setPromises} cu={cu} fxRate={fxRate} onSavePromise={savePromise} />}
         {tab === "reports" && <ReportsView clients={clients} reservations={reservations} payments={payments} pp={pp} users={users} role={cu.role} courtesies={courtesies} rc={rc} />}
         {tab === "config" && <ConfigView seasonOrder={seasonOrder} setSeasonOrder={setSeasonOrder} uts={uts} setUts={setUts} units={units} setUnits={setUnits} pp={pp} setPp={setPp} onSaveUnit={saveUnit} onSaveUnitType={saveUnitType} onRemoveUnitType={removeUnitType} />}
-        {tab === "pmethods" && <PayMethodsView pms={pms} setPms={setPms} />}
+        {tab === "pmethods" && <PayMethodsView pms={pms} setPms={setPms} onSavePm={savePaymentMethod} />}
         {tab === "comp" && <CompView users={users} setUsers={setUsers} payments={payments} reservations={reservations} pp={pp} rc={rc} setRc={setRc} cr={cr} setCr={setCr} />}
         {tab === "users" && <UsersView cu={cu} users={users} setUsers={setUsers} rc={rc} />}
         {tab === "team" && <TeamView users={users} setUsers={setUsers} clients={clients} setClients={setClients} payments={payments} reservations={reservations} />}

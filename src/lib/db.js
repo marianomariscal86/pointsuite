@@ -65,7 +65,7 @@ function mapClient(c) {
 export async function fetchPayments() {
   const { data, error } = await supabase
     .from('payments')
-    .select('*, clients(full_name, contract_no), users!processed_by(username)')
+    .select('*, clients(full_name, contract_no), processedUser:users!processed_by(username, full_name), originatedUser:users!originated_by(username, full_name)')
     .eq('is_deleted', false)
     .order('payment_date', { ascending: false });
   if (error) throw error;
@@ -103,7 +103,10 @@ function mapPayment(p) {
     type: p.concept,
     note: p.note,
     status: 'Liquidado',
-    processedBy: p.users?.username,
+    processedBy: p.processedUser?.username || null, // username del cajero que valido
+    originatedBy: p.originatedUser?.username || null, // username del gestor que propuso
+    methodId: p.payment_method_id,
+    method: null, // se resuelve en cliente con pms
     maintYear: p.maint_year,
     maintPointExpiry: p.maint_point_expiry,
     isPrepago: p.is_prepago,
@@ -156,9 +159,9 @@ export async function fetchUnits() {
   return data.map(u => ({
     id: u.id,
     name: u.name,
-    typeId: u.type_id,
+    typeId: u.unit_type_id,
     location: u.location || '',
-    active: u.active !== false,
+    active: u.is_active !== false,
     occ: [],
     seasons: u.unit_season_ranges || [],
   }));
@@ -169,9 +172,9 @@ export async function insertUnit(u) {
     .from('units')
     .insert([{
       name: u.name,
-      type_id: u.typeId,
+      unit_type_id: u.typeId,
       location: u.location || '',
-      active: u.active !== false,
+      is_active: u.active !== false,
     }])
     .select().single();
   if (error) throw error;
@@ -181,9 +184,9 @@ export async function insertUnit(u) {
 export async function updateUnit(id, fields) {
   const dbFields = {};
   if (fields.name !== undefined) dbFields.name = fields.name;
-  if (fields.typeId !== undefined) dbFields.type_id = fields.typeId;
+  if (fields.typeId !== undefined) dbFields.unit_type_id = fields.typeId;
   if (fields.location !== undefined) dbFields.location = fields.location;
-  if (fields.active !== undefined) dbFields.active = fields.active;
+  if (fields.active !== undefined) dbFields.is_active = fields.active;
   const { error } = await supabase
     .from('units')
     .update(dbFields)
@@ -251,10 +254,30 @@ export async function fetchPaymentMethods() {
   const { data, error } = await supabase
     .from('payment_methods')
     .select('*')
-    .eq('is_active', true)
     .order('id');
   if (error) throw error;
-  return data.map(m => ({ id: m.id, name: m.name, costPct: parseFloat(m.cost_pct || 0) }));
+  return data.map(m => ({ id: m.id, name: m.name, costPct: parseFloat(m.cost_pct || 0), active: m.is_active !== false }));
+}
+
+export async function insertPaymentMethod(pm) {
+  const { data, error } = await supabase
+    .from('payment_methods')
+    .insert([{ name: pm.name, cost_pct: pm.costPct || 0, is_active: pm.active !== false }])
+    .select().single();
+  if (error) throw error;
+  return data;
+}
+
+export async function updatePaymentMethod(id, fields) {
+  const dbFields = {};
+  if (fields.name !== undefined) dbFields.name = fields.name;
+  if (fields.costPct !== undefined) dbFields.cost_pct = fields.costPct;
+  if (fields.active !== undefined) dbFields.is_active = fields.active;
+  const { error } = await supabase
+    .from('payment_methods')
+    .update(dbFields)
+    .eq('id', id);
+  if (error) throw error;
 }
 
 // ─── PROMESAS ─────────────────────────────────────────────
