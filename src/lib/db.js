@@ -25,6 +25,25 @@ export async function updateClient(id, fields) {
   if (error) throw error;
 }
 
+export async function insertSavedPoints(clientId, points, maintYear, savedBy, note) {
+  // Los puntos guardados vencen el 31 dic del año siguiente al actual
+  const expiryYear = new Date().getFullYear() + 1;
+  const expiryDate = new Date(expiryYear, 11, 31).toISOString().split("T")[0];
+  const { data, error } = await supabase
+    .from('client_saved_points')
+    .insert([{
+      client_id: clientId,
+      points: points,
+      expiry_date: expiryDate,
+      maint_year: maintYear || null,
+      saved_at: new Date().toISOString(),
+      note: note || null,
+    }])
+    .select().single();
+  if (error) throw error;
+  return data;
+}
+
 function mapClient(c) {
   return {
     id: c.id,

@@ -2408,7 +2408,11 @@ export default function App() {
       const dynClients = (dbClients.length > 0 ? dbClients : INIT_C).map(c => {
         const desg = getMaintDesglose(c, dbPayments, pp);
         const dyn = desg.reduce((a, d) => a + d.pendienteMXN, 0);
-        return { ...c, balance: dyn };
+        // Calcular paid_points dinámicos: SOLO puntos del año en curso + año siguiente (prepago)
+        // Los puntos de años anteriores están vencidos y NO se cuentan como disponibles.
+        const paidByYear = getPaidPtsByYear(c, dbPayments);
+        const availPaidPts = (paidByYear[CY] || 0) + (paidByYear[CY + 1] || 0);
+        return { ...c, balance: dyn, paidPoints: availPaidPts };
       });
       setClients(dynClients);
 
@@ -2453,6 +2457,12 @@ export default function App() {
       const fx = fxRate?.rate || 17.5;
       const dbUser = users.find(u => u.username === cu?.username);
       const userId = dbUser?.id || null;
+      // El cajero es quien valida (processedBy = cu actual cuando es cajero)
+      // El gestor es quien propuso (paymentObj.processedBy contiene el username del gestor)
+      const cajeroUser = users.find(u => u.username === (paymentObj.processedByCajero || cu?.username));
+      const cajeroId = cajeroUser?.id || userId;
+      const gestorUser = users.find(u => u.username === paymentObj.processedBy) || users.find(u => u.username === paymentObj.submittedBy);
+      const gestorId = gestorUser?.id || userId;
       const fxId = fxRate?.id || null;
       const dbPayment = {
         client_id: paymentObj.clientId,
@@ -2469,8 +2479,8 @@ export default function App() {
         maint_year: paymentObj.maintYear || null,
         maint_point_expiry: paymentObj.maintPointExpiry || null,
         is_prepago: paymentObj.isPrepago || false,
-        processed_by: userId,
-        originated_by: userId,
+        processed_by: cajeroId,
+        originated_by: gestorId,
         payment_method_id: paymentObj.methodId || null,
         pending_payment_id: paymentObj.pendingPaymentId || null,
         fx_rate_id: fxId,
