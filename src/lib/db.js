@@ -69,11 +69,13 @@ function mapClient(c) {
       maintYear: sp.maint_year,
       note: sp.note,
     })),
-    phones: (c.client_phones || []).map(p => ({ label: p.label, number: p.phone })),
-    emails: (c.client_emails || []).map(e => ({ label: e.label, email: e.email })),
-    addresses: (c.client_addresses || []).map(a => ({ label: a.label, address: a.address })),
+    phones: (c.client_phones || []).map(p => ({ id: p.id, label: p.label, number: p.phone, active: p.is_active !== false })),
+    emails: (c.client_emails || []).map(e => ({ id: e.id, label: e.label, email: e.email, active: e.is_active !== false })),
+    addresses: (c.client_addresses || []).map(a => ({ id: a.id, label: a.label, address: a.address, text: a.address, active: a.is_active !== false })),
     comments: (c.client_comments || []).map(cm => ({
+      id: cm.id,
       text: cm.body || '',
+      body: cm.body || '',
       author: cm.author_id ? String(cm.author_id) : '',
       date: cm.created_at?.slice(0, 10)
     })),
@@ -440,4 +442,207 @@ export async function insertUser(u) {
     .select().single();
   if (error) throw error;
   return data;
+}
+
+// ─── CLIENTES (CRUD nuevo) ────────────────────────────────
+export async function insertClient(c) {
+  const dbFields = {
+    contract_no: c.contractNo,
+    full_name: c.name,
+    contract_date: c.contractDate || null,
+    contract_years: c.contractYears || 10,
+    years_elapsed: c.yearsElapsed || 0,
+    total_points: c.totalPoints || 0,
+    points_used_to_date: c.pointsUsedToDate || 0,
+    annual_points: c.annualPoints || 0,
+    paid_points: 0,
+    balance_usd: 0,
+    due_date: c.dueDate || null,
+    account_status: c.status || 'Active',
+    contract_status: c.contractStatus || 'Active',
+    assigned_gestor_id: c.assignedGestor ? +c.assignedGestor : null,
+  };
+  const { data, error } = await supabase
+    .from('clients')
+    .insert([dbFields])
+    .select().single();
+  if (error) throw error;
+  return data;
+}
+
+// ─── PHONES / EMAILS / ADDRESSES / COMMENTS ────────────────
+export async function insertClientPhone(clientId, label, number, isActive = true) {
+  const { data, error } = await supabase
+    .from('client_phones')
+    .insert([{ client_id: clientId, label, phone: number, is_active: isActive }])
+    .select().single();
+  if (error) throw error;
+  return data;
+}
+
+export async function updateClientPhone(id, isActive) {
+  const { error } = await supabase
+    .from('client_phones')
+    .update({ is_active: isActive })
+    .eq('id', id);
+  if (error) throw error;
+}
+
+export async function insertClientEmail(clientId, label, email, isActive = true) {
+  const { data, error } = await supabase
+    .from('client_emails')
+    .insert([{ client_id: clientId, label, email, is_active: isActive }])
+    .select().single();
+  if (error) throw error;
+  return data;
+}
+
+export async function updateClientEmail(id, isActive) {
+  const { error } = await supabase
+    .from('client_emails')
+    .update({ is_active: isActive })
+    .eq('id', id);
+  if (error) throw error;
+}
+
+export async function insertClientAddress(clientId, label, address, isActive = true) {
+  const { data, error } = await supabase
+    .from('client_addresses')
+    .insert([{ client_id: clientId, label, address, is_active: isActive }])
+    .select().single();
+  if (error) throw error;
+  return data;
+}
+
+export async function updateClientAddress(id, isActive) {
+  const { error } = await supabase
+    .from('client_addresses')
+    .update({ is_active: isActive })
+    .eq('id', id);
+  if (error) throw error;
+}
+
+export async function insertClientComment(clientId, body, authorId) {
+  const { data, error } = await supabase
+    .from('client_comments')
+    .insert([{ client_id: clientId, body, author_id: authorId, created_at: new Date().toISOString() }])
+    .select().single();
+  if (error) throw error;
+  return data;
+}
+
+// ─── RESERVACIONES (cancelar) ─────────────────────────────
+export async function updateReservation(id, fields) {
+  const dbFields = {};
+  if (fields.status !== undefined) dbFields.status = fields.status;
+  if (fields.checkIn !== undefined) dbFields.check_in = fields.checkIn;
+  if (fields.checkOut !== undefined) dbFields.check_out = fields.checkOut;
+  const { error } = await supabase.from('reservations').update(dbFields).eq('id', id);
+  if (error) throw error;
+}
+
+// ─── VENTA DE PUNTOS ──────────────────────────────────────
+export async function insertPointSale(s, processedBy) {
+  const { data, error } = await supabase
+    .from('point_sales')
+    .insert([{
+      client_id: s.clientId,
+      sale_type: s.stype,
+      points: s.pts,
+      extra_years: s.eYr || 0,
+      extra_annual: s.eAn || 0,
+      total_mxn: s.totalMxn || 0,
+      total_usd: s.totalUsd || 0,
+      processed_by: processedBy,
+      sale_date: new Date().toISOString().split('T')[0],
+      status: 'validated',
+    }])
+    .select().single();
+  if (error) throw error;
+  return data;
+}
+
+// ─── COMMISSION RATES ─────────────────────────────────────
+export async function fetchCommissionRates() {
+  const { data, error } = await supabase
+    .from('commission_rates')
+    .select('*')
+    .eq('is_active', true)
+    .order('concept_id');
+  if (error) {
+    return [
+      { id: 'default-mant', concept: 'maintenance', ratePct: 2.0 },
+      { id: 'default-prepago', concept: 'prepago', ratePct: 1.0 },
+      { id: 'default-moratorios', concept: 'moratorios', ratePct: 3.0 },
+      { id: 'default-sale', concept: 'point_sale', ratePct: 0.0 },
+    ];
+  }
+  return data.map(r => ({ id: r.concept_id, concept: r.concept_id, ratePct: parseFloat(r.rate_pct || 0), label: r.label }));
+}
+
+export async function upsertCommissionRate(concept, ratePct) {
+  const { data: existing } = await supabase
+    .from('commission_rates')
+    .select('concept_id')
+    .eq('concept_id', concept)
+    .single();
+  if (existing) {
+    const { error } = await supabase
+      .from('commission_rates')
+      .update({ rate_pct: ratePct, updated_at: new Date().toISOString() })
+      .eq('concept_id', concept);
+    if (error) throw error;
+  } else {
+    const { error } = await supabase
+      .from('commission_rates')
+      .insert([{ concept_id: concept, label: concept, rate_pct: ratePct, is_active: true }]);
+    if (error) throw error;
+  }
+}
+
+// ─── SYSTEM CONFIG (price per point, reservation commission) ───
+export async function fetchSystemConfig() {
+  const { data, error } = await supabase
+    .from('system_config')
+    .select('price_per_point_usd, reservation_commission_usd, season_order')
+    .single();
+  if (error) return { pricePerPoint: 4.75, reservationFee: 150 };
+  return {
+    pricePerPoint: parseFloat(data.price_per_point_usd || 4.75),
+    reservationFee: parseFloat(data.reservation_commission_usd || 150),
+    seasonOrder: data.season_order || null,
+  };
+}
+
+export async function upsertSystemConfig(key, value) {
+  // system_config es una sola fila (id=1), con columnas especificas
+  const colMap = {
+    price_per_point: 'price_per_point_usd',
+    reservation_fee: 'reservation_commission_usd',
+  };
+  const col = colMap[key];
+  if (!col) { console.warn('upsertSystemConfig: columna desconocida', key); return; }
+  const { error } = await supabase
+    .from('system_config')
+    .update({ [col]: value, updated_at: new Date().toISOString() })
+    .eq('id', 1);
+  if (error) throw error;
+}
+
+// ─── CONTRACT (cancelación / reactivación) ─────────────────
+export async function cancelClientContract(clientId, reason, type) {
+  // type = 'Cancelado s/pago' | 'Cancelado c/pago' | 'Active'
+  const fields = { contract_status: type };
+  if (type === 'Active') {
+    fields.cancel_date = null;
+    fields.cancel_reason = null;
+  } else {
+    fields.cancel_date = new Date().toISOString().split('T')[0];
+    fields.cancel_reason = reason;
+  }
+  const { error } = await supabase
+    .from('clients')
+    .update(fields)
+    .eq('id', clientId);
+  if (error) throw error;
 }

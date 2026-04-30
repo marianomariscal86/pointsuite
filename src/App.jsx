@@ -1,9 +1,13 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
 import { supabase } from './supabase.js';
 import {
-  fetchClients, updateClient,
+  fetchClients, updateClient, insertClient, insertSavedPoints,
+  insertClientPhone, updateClientPhone,
+  insertClientEmail, updateClientEmail,
+  insertClientAddress, updateClientAddress,
+  insertClientComment,
   fetchPayments, insertPayment,
-  fetchReservations, insertReservation,
+  fetchReservations, insertReservation, updateReservation,
   fetchUnits, insertUnit, updateUnit,
   fetchUnitTypes, insertUnitType, updateUnitType, deleteUnitType,
   fetchFxRate, insertFxRate,
@@ -11,6 +15,10 @@ import {
   fetchPromises, insertPromise, updatePromise,
   fetchPendingPayments, insertPendingPayment, updatePendingPayment,
   fetchUsers, updateUser, insertUser,
+  insertPointSale,
+  fetchCommissionRates, upsertCommissionRate,
+  fetchSystemConfig, upsertSystemConfig,
+  cancelClientContract,
 } from './lib/db.js';
 const BG = "#030912", BG2 = "#060d19", BG3 = "#0b1628", BD = "#18263d";
 const T1 = "#e2e8f0", T2 = "#8aa8c0", T3 = "#2e4a66", T4 = "#1e3558", T5 = "#2d4563"; // Corregido: T5 definido aquí
@@ -163,7 +171,13 @@ const INIT_UNITS = [
   { id: 6, typeId: 2, location: "Centro CDMX", name: "Suite C-10", active: false, occ: [], seasons: [mkSeason("platino", [{ startMonth: 12, startDay: 15, endMonth: 1, endDay: 5 }], 180, 230), mkSeason("oro", [{ startMonth: 7, startDay: 1, endMonth: 8, endDay: 31 }], 140, 180), mkSeason("plata", [{ startMonth: 1, startDay: 6, endMonth: 6, endDay: 30 }, { startMonth: 9, startDay: 1, endMonth: 12, endDay: 14 }], 90, 120)] },
 ];
 const INIT_PM = [{ id: 1, name: "Efectivo", costPct: 0, active: true }, { id: 2, name: "Tarjeta Créd.", costPct: 3.5, active: true }, { id: 3, name: "Tarjeta Déb.", costPct: 1.8, active: true }, { id: 4, name: "Transferencia", costPct: 0.5, active: true }, { id: 5, name: "Cheque", costPct: 0.8, active: true }, { id: 6, name: "ACH", costPct: 0.25, active: true }];
-const INIT_CR = [{ id: "maintenance", l: "Pago mantenimiento", pct: 1.5, active: true }, { id: "point_purchase", l: "Compra puntos", pct: 2.0, active: true }, { id: "cancellation_payment", l: "Liquidación cancelación", pct: 0.5, active: true }, { id: "moratorios", l: "Moratorios", pct: 3.0, active: true }];
+const INIT_CR = [
+  { id: "maintenance", l: "Pago mantenimiento", pct: 2.0, active: true },
+  { id: "prepago", l: "Mantenimiento adelantado (Prepago)", pct: 1.0, active: true },
+  { id: "moratorios", l: "Moratorios", pct: 3.0, active: true },
+  { id: "point_purchase", l: "Compra/Venta puntos", pct: 2.0, active: true },
+  { id: "cancellation_payment", l: "Liquidación cancelación", pct: 0.5, active: true },
+];
 const INIT_C = [
   { id: 1, contractNo: "C-2018-001", name: "Margaret & Robert Ellis", phones: [mkP("Esposo", "555-0101"), mkP("Esposa", "555-0111"), mkP("Casa", "555-0121")], emails: [mkE("Principal", "rellis@email.com"), mkE("Esposa", "margaret@email.com")], addresses: [mkA("Casa", "142 Oakwood Dr, Austin TX"), mkA("Trabajo", "800 Congress Ave, Austin TX")], contractDate: "2018-03-15", dueDate: "2025-03-15", contractYears: 10, yearsElapsed: 7, totalPoints: 50000, pointsUsedToDate: 35000, annualPoints: 5000, paidPoints: 4000, balance: 4750, status: "Partial", contractStatus: "Active", assignedGestor: "gestor1", savedPoints: [], comments: [mkC("Cliente VIP, prefiere WhatsApp", "gestor1", "2025-01-10")] },
   { id: 2, contractNo: "C-2019-002", name: "James Nakamura", phones: [mkP("Celular", "555-0202"), mkP("Oficina", "555-0212")], emails: [mkE("Principal", "jnakamura@email.com"), mkE("Trabajo", "j.nakamura@corp.com")], addresses: [mkA("Casa", "87 Pine Ct, Seattle WA")], contractDate: "2019-07-22", dueDate: "2025-07-22", contractYears: 10, yearsElapsed: 6, totalPoints: 80000, pointsUsedToDate: 48000, annualPoints: 8000, paidPoints: 8000, balance: 0, status: "Active", contractStatus: "Active", assignedGestor: "gestor1", savedPoints: [], comments: [mkC("Pagó anticipado sin inconvenientes", "gestor1", "2025-01-16")] },
@@ -382,7 +396,7 @@ function Comments({ comments, onAdd, cu }) {
   </div>);
 }
 // ── CLIENT MODAL ─────────────────────────────────────────────────────────────
-function ClientModal({ client, onSave, onClose, pp, cu }) {
+function ClientModal({ client, onSave, onClose, pp, cu, onAddPhone, onSetPhoneActive, onAddEmail, onSetEmailActive, onAddAddress, onSetAddressActive, onAddComment }) {
   const isAdmin = ["superadmin", "admin"].includes(cu?.role);
   const blank = { contractNo: "", name: "", contractDate: "", dueDate: "", contractYears: 10, yearsElapsed: 0, totalPoints: 0, pointsUsedToDate: 0, paidPoints: 0, balance: 0, status: "Active", contractStatus: "Active", assignedGestor: "", phones: [], emails: [], addresses: [], comments: [], savedPoints: [] };
   const [f, setF] = useState(client || blank);
@@ -390,13 +404,38 @@ function ClientModal({ client, onSave, onClose, pp, cu }) {
   const yr = Math.max(1, (f.contractYears || 1) - (f.yearsElapsed || 0));
   const cAP = calcAP(f.totalPoints || 0, f.pointsUsedToDate || 0, yr);
   const cBal = Math.max(0, (cAP - (f.paidPoints || 0)) * pp);
-  const addPh = (l, n) => set("phones")([...f.phones, { label: l, number: n, active: true }]);
-  const addEm = (l, e) => set("emails")([...f.emails, { label: l, email: e, active: true }]);
-  const addAd = (l, t) => set("addresses")([...f.addresses, { label: l, text: t, active: true }]);
-  const togPh = i => set("phones")(f.phones.map((p, x) => x === i ? { ...p, active: p.active === false ? true : false } : p));
-  const togEm = i => set("emails")(f.emails.map((e, x) => x === i ? { ...e, active: e.active === false ? true : false } : e));
-  const togAd = i => set("addresses")(f.addresses.map((a, x) => x === i ? { ...a, active: a.active === false ? true : false } : a));
-  const addCm = c => set("comments")([...(f.comments || []), c]);
+  // Add phones/emails/addresses → Llamar handlers de BD si existe el cliente
+  const addPh = (l, n) => {
+    set("phones")([...(f.phones || []), { label: l, number: n, active: true }]);
+    if (client && onAddPhone) onAddPhone(client.id, l, n);
+  };
+  const addEm = (l, e) => {
+    set("emails")([...(f.emails || []), { label: l, email: e, active: true }]);
+    if (client && onAddEmail) onAddEmail(client.id, l, e);
+  };
+  const addAd = (l, t) => {
+    set("addresses")([...(f.addresses || []), { label: l, text: t, active: true }]);
+    if (client && onAddAddress) onAddAddress(client.id, l, t);
+  };
+  const togPh = i => {
+    const item = f.phones[i];
+    set("phones")(f.phones.map((p, x) => x === i ? { ...p, active: p.active === false ? true : false } : p));
+    if (client && onSetPhoneActive && item.id) onSetPhoneActive(item.id, item.active === false);
+  };
+  const togEm = i => {
+    const item = f.emails[i];
+    set("emails")(f.emails.map((e, x) => x === i ? { ...e, active: e.active === false ? true : false } : e));
+    if (client && onSetEmailActive && item.id) onSetEmailActive(item.id, item.active === false);
+  };
+  const togAd = i => {
+    const item = f.addresses[i];
+    set("addresses")(f.addresses.map((a, x) => x === i ? { ...a, active: a.active === false ? true : false } : a));
+    if (client && onSetAddressActive && item.id) onSetAddressActive(item.id, item.active === false);
+  };
+  const addCm = c => {
+    set("comments")([...(f.comments || []), c]);
+    if (client && onAddComment) onAddComment(client.id, c.text || c.body || c);
+  };
   if (!isAdmin && client) {
     return (<Modal title={`+ Info — ${client.name}`} onClose={onClose} wide>
       <div style={{ background: Y + "14", border: `1px solid ${Y}28`, borderRadius: 7, padding: "9px 12px", marginBottom: 13, fontSize: 11, color: Y }}>Como gestor solo puedes agregar. No puedes modificar ni eliminar datos existentes.</div>
@@ -448,20 +487,104 @@ function ClientModal({ client, onSave, onClose, pp, cu }) {
     </div>
   </Modal>);
 }
+
+// ── CONTACTS PANEL — agregar / desactivar / activar (sin borrar ni editar) ─
+function ContactsPanel({ selC, cu, onAddPhone, onSetPhoneActive, onAddEmail, onSetEmailActive, onAddAddress, onSetAddressActive }) {
+  const [add, setAdd] = useState(null); // 'phones' | 'emails' | 'addresses'
+  const [label, setLabel] = useState("");
+  const [val, setVal] = useState("");
+  const reset = () => { setAdd(null); setLabel(""); setVal(""); };
+  const submit = () => {
+    if (!label.trim() || !val.trim()) return;
+    if (add === "phones" && onAddPhone) onAddPhone(selC.id, label, val);
+    if (add === "emails" && onAddEmail) onAddEmail(selC.id, label, val);
+    if (add === "addresses" && onAddAddress) onAddAddress(selC.id, label, val);
+    reset();
+  };
+  const sections = [
+    { key: "phones", title: "Teléfonos", items: selC.phones || [], field: "number", setActive: onSetPhoneActive, placeholder: "555-1234" },
+    { key: "emails", title: "Correos", items: selC.emails || [], field: "email", setActive: onSetEmailActive, placeholder: "user@example.com" },
+    { key: "addresses", title: "Direcciones", items: selC.addresses || [], field: "text", setActive: onSetAddressActive, placeholder: "Calle 123, Col., Ciudad" },
+  ];
+  return (<div>
+    {sections.map(s => (
+      <div key={s.key} style={{ marginBottom: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 }}>
+          <div style={{ fontSize: 9, color: T4, textTransform: "uppercase" }}>{s.title}</div>
+          <Btn label="+ Agregar" small variant="ghost" onClick={() => { setAdd(s.key); setLabel(""); setVal(""); }} />
+        </div>
+        {s.items.map((it) => (<div key={it.id || it.label + it[s.field]} style={{ display: "flex", gap: 7, padding: "5px 0", borderBottom: `1px solid ${BG3}`, opacity: it.active === false ? .4 : 1, alignItems: "center" }}>
+          <span style={{ fontSize: 9, color: T3, width: 68, flexShrink: 0, background: BG3, borderRadius: 4, padding: "2px 5px", textAlign: "center" }}>{it.label}</span>
+          <span style={{ color: T2, fontSize: 11, flex: 1, fontFamily: s.field === "text" ? "inherit" : "monospace" }}>{it[s.field]}</span>
+          {it.active === false && <span style={{ fontSize: 9, color: R, background: R + "12", borderRadius: 4, padding: "1px 5px" }}>F/S</span>}
+          {it.id && <Btn label={it.active === false ? "↻" : "✗"} variant={it.active === false ? "success" : "ghost"} small onClick={() => s.setActive && s.setActive(it.id, !(it.active !== false))} />}
+        </div>))}
+        {s.items.length === 0 && <div style={{ color: T4, fontSize: 10, padding: "5px 0", textAlign: "center" }}>Sin {s.title.toLowerCase()}</div>}
+        {add === s.key && (
+          <div style={{ background: BG3, borderRadius: 6, padding: 8, marginTop: 6, display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <input value={label} onChange={e => setLabel(e.target.value)} placeholder="Etiqueta (ej. Casa)" style={{ ...IS, fontSize: 11, padding: "4px 6px", flex: "0 0 110px" }} />
+            <input value={val} onChange={e => setVal(e.target.value)} placeholder={s.placeholder} style={{ ...IS, fontSize: 11, padding: "4px 6px", flex: 1 }} />
+            <Btn label="Guardar" small variant="success" onClick={submit} />
+            <Btn label="Cancelar" small variant="ghost" onClick={reset} />
+          </div>
+        )}
+      </div>
+    ))}
+    <div style={{ fontSize: 9, color: T4, marginTop: 10, fontStyle: "italic" }}>
+      ✓ Cualquier rol puede agregar nueva información o marcar como vigente/no vigente.
+      <br />⚠ La información existente NO se puede editar ni borrar.
+    </div>
+  </div>);
+}
+
+// ── COMMENTS PANEL — agregar (sin editar/borrar existentes) ─
+function CommentsPanel({ selC, cu, onAddComment }) {
+  const [text, setText] = useState("");
+  const submit = () => {
+    if (!text.trim() || !onAddComment) return;
+    onAddComment(selC.id, text.trim());
+    setText("");
+  };
+  return (<div>
+    <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+      <input value={text} onChange={e => setText(e.target.value)} placeholder="Escribe un comentario..." style={{ ...IS, fontSize: 11 }} />
+      <Btn label="+ Agregar" small variant="success" onClick={submit} disabled={!text.trim()} />
+    </div>
+    {[...(selC.comments || [])].sort((a, b) => (b.id || 0) - (a.id || 0)).map(c => (<div key={c.id || c.date} style={{ background: BG3, borderRadius: 6, padding: "9px 11px", marginBottom: 7, borderLeft: `2px solid ${T4}` }}>
+      <div style={{ color: T2, fontSize: 12, marginBottom: 4, lineHeight: 1.5 }}>{c.text || c.body}</div>
+      <div style={{ color: T4, fontSize: 9 }}>{c.by || c.author} · {c.date || (c.created_at ? c.created_at.slice(0, 10) : "")}</div>
+    </div>))}
+    {(selC.comments || []).length === 0 && <div style={{ color: T4, fontSize: 11, textAlign: "center", padding: "18px 0" }}>Sin comentarios</div>}
+  </div>);
+}
+
 // ── CLIENTS VIEW ─────────────────────────────────────────────────────────────
-function ClientsView({ clients, setClients, pp, cu, payments, reservations, onGoToCashier, onGoToRes }) {
+function ClientsView({ clients, setClients, pp, cu, payments, reservations, users, onGoToCashier, onGoToRes, onSaveClient, onAddPhone, onSetPhoneActive, onAddEmail, onSetEmailActive, onAddAddress, onSetAddressActive, onAddComment, onSaveSavedPoints }) {
   const [srch, setSrch] = useState(""), [filt, setFilt] = useState("All"), [sel, setSel] = useState(null), [modal, setModal] = useState(null), [dtab, setDtab] = useState("info");
   const [saveModal, setSaveModal] = useState(null);
   const canEdit = ["superadmin", "admin"].includes(cu.role);
   const en = useMemo(() => clients.map(c => { const d = dOvr(c.dueDate); const cl = getClientStatus(c, payments); const interest = cInt(c.balance, d, cl.r * 12); return { ...c, dOvr: d, cls: cl, interest, totalOwed: c.balance + interest, ph: (c.phones || []).find(p => p.active !== false)?.number || "—" }; }), [clients, payments]);
   const filtered = useMemo(() => { const ql = srch.toLowerCase(); return en.filter(c => { const ms = !srch || c.name.toLowerCase().includes(ql) || c.contractNo.toLowerCase().includes(ql) || (c.phones || []).some(p => p.number.includes(srch)) || (c.emails || []).some(e => e.email.toLowerCase().includes(ql)); const mf = filt === "All" || c.status === filt || (filt === "Morosos" && c.balance > 0) || (filt === "Cancelados" && c.contractStatus !== "Active"); return ms && mf; }); }, [en, srch, filt]);
   const selC = en.find(c => c.id === sel);
-  const save = f => { if (modal === "new") setClients(cs => [...cs, { ...f, id: Date.now() }]); else setClients(cs => cs.map(c => c.id === modal.id ? { ...f, id: c.id } : c)); setModal(null); };
+  const canEditContract = cu && (cu.role === "admin" || cu.role === "superadmin");
+  const save = f => {
+    if (!canEditContract) { alert("Solo admin/superadmin puede modificar datos del contrato."); return; }
+    const isNew = modal === "new";
+    const obj = isNew ? { ...f, id: Date.now() } : { ...f, id: modal.id };
+    if (isNew) setClients(cs => [...cs, obj]);
+    else setClients(cs => cs.map(c => c.id === modal.id ? obj : c));
+    if (onSaveClient) onSaveClient(obj);
+    setModal(null);
+  };
   const exportCSV = (rows, cols, name) => { const csv = [cols, ...rows].map(r => r.join(",")).join("\n"); const a = document.createElement("a"); a.href = "data:text/csv," + encodeURIComponent(csv); a.download = name; a.click(); };
   return (<div style={{ display: "grid", gridTemplateColumns: selC ? "1fr 380px" : "1fr", gap: 14 }}>
     <div>
-      {modal && <ClientModal client={modal === "new" ? null : modal} onSave={save} onClose={() => setModal(null)} pp={pp} cu={cu} />}
-      {saveModal && <SavePointsModal client={saveModal} cu={cu} onClose={() => setSaveModal(null)} onSave={sp => { setClients(cs => cs.map(c => c.id === saveModal.id ? { ...c, paidPoints: c.paidPoints - sp.points, savedPoints: [...(c.savedPoints || []), sp] } : c)); setSaveModal(null); }} />}
+      {modal && <ClientModal client={modal === "new" ? null : modal} onSave={save} onClose={() => setModal(null)} pp={pp} cu={cu} onAddPhone={onAddPhone} onSetPhoneActive={onSetPhoneActive} onAddEmail={onAddEmail} onSetEmailActive={onSetEmailActive} onAddAddress={onAddAddress} onSetAddressActive={onSetAddressActive} onAddComment={onAddComment} />}
+      {saveModal && <SavePointsModal client={saveModal} cu={cu} onClose={() => setSaveModal(null)} onSave={sp => {
+        setClients(cs => cs.map(c => c.id === saveModal.id ? { ...c, paidPoints: c.paidPoints - sp.points, savedPoints: [...(c.savedPoints || []), sp] } : c));
+        if (onSaveSavedPoints) onSaveSavedPoints(saveModal.id, sp.points, sp.maintYear, sp.note);
+        setSaveModal(null);
+      }} />}
       <div style={{ display: "flex", gap: 8, marginBottom: 11, flexWrap: "wrap" }}>
         <input placeholder="Nombre, Nº contrato, teléfono, email…" value={srch} onChange={e => setSrch(e.target.value)} style={{ ...IS, flex: 1, minWidth: 200 }} />
         <select value={filt} onChange={e => setFilt(e.target.value)} style={{ ...IS, width: 130 }}>{["All", "Active", "Partial", "Delinquent", "Morosos", "Cancelados"].map(s => <option key={s}>{s}</option>)}</select>
@@ -525,18 +648,7 @@ function ClientsView({ clients, setClients, pp, cu, payments, reservations, onGo
           {(selC.savedPoints || []).length === 0 && <div style={{ color: T4, fontSize: 10, textAlign: "center", padding: "8px 0" }}>Sin puntos guardados</div>}
         </div>
       </div>}
-      {dtab === "contacts" && <div>
-        {[["Teléfonos", (selC.phones || []), "number"], ["Correos", (selC.emails || []), "email"], ["Direcciones", (selC.addresses || []), "text"]].map(([title, items, field]) => (
-          <div key={title} style={{ marginBottom: 10 }}>
-            <div style={{ fontSize: 9, color: T4, textTransform: "uppercase", marginBottom: 5 }}>{title}</div>
-            {items.map((it, i) => (<div key={i} style={{ display: "flex", gap: 7, padding: "5px 0", borderBottom: `1px solid ${BG3}`, opacity: it.active === false ? .4 : 1 }}>
-              <span style={{ fontSize: 9, color: T3, width: 68, flexShrink: 0, background: BG3, borderRadius: 4, padding: "2px 5px", textAlign: "center" }}>{it.label}</span>
-              <span style={{ color: T2, fontSize: 11, flex: 1, fontFamily: field === "text" ? "inherit" : "monospace" }}>{it[field]}</span>
-              {it.active === false && <span style={{ fontSize: 9, color: R, background: R + "12", borderRadius: 4, padding: "1px 5px" }}>F/S</span>}
-            </div>))}
-          </div>
-        ))}
-      </div>}
+      {dtab === "contacts" && <ContactsPanel selC={selC} cu={cu} onAddPhone={onAddPhone} onSetPhoneActive={onSetPhoneActive} onAddEmail={onAddEmail} onSetEmailActive={onSetEmailActive} onAddAddress={onAddAddress} onSetAddressActive={onSetAddressActive} />}
       {dtab === "contract" && <div>
         {[["Plazo total", `${selC.contractYears || "—"} años`], ["Años transcurridos", selC.yearsElapsed || 0], ["Años restantes", Math.max(0, (selC.contractYears || 0) - (selC.yearsElapsed || 0))], ["Pts totales", fP(selC.totalPoints)], ["Pts usados (hist.)", fP(selC.pointsUsedToDate || 0)], ["Pts restantes", fP(Math.max(0, (selC.totalPoints || 0) - (selC.pointsUsedToDate || 0)))], ["Pts anuales", fP(selC.annualPoints)], ["Pts pagados", fP(selC.paidPoints)]].map(([l, v]) => (
           <div key={l} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", borderBottom: `1px solid ${BG3}` }}>
@@ -544,13 +656,7 @@ function ClientsView({ clients, setClients, pp, cu, payments, reservations, onGo
           </div>
         ))}
       </div>}
-      {dtab === "comments" && <div>
-        {[...(selC.comments || [])].sort((a, b) => b.id - a.id).map(c => (<div key={c.id} style={{ background: BG3, borderRadius: 6, padding: "9px 11px", marginBottom: 7, borderLeft: `2px solid ${T4}` }}>
-          <div style={{ color: T2, fontSize: 12, marginBottom: 4, lineHeight: 1.5 }}>{c.text}</div>
-          <div style={{ color: T4, fontSize: 9 }}>{c.by} · {c.date}</div>
-        </div>))}
-        {(selC.comments || []).length === 0 && <div style={{ color: T4, fontSize: 11, textAlign: "center", padding: "18px 0" }}>Sin comentarios</div>}
-      </div>}
+      {dtab === "comments" && <CommentsPanel selC={selC} cu={cu} onAddComment={onAddComment} />}
       {dtab === "txhistory" && (() => {
         const cP = [...payments].filter(p => p.clientId === selC.id).sort((a, b) => b.id - a.id);
         const exp = () => exportCSV([["Fecha", "Monto", "Pts", "Concepto", "Método", "Gestor"], ...cP.map(p => [p.date, p.amount, p.points, p.type, p.method, p.processedBy])], [], "cobros_" + selC.contractNo + ".csv");
@@ -636,7 +742,27 @@ function autoCleanup(pending, promises, setPending, setPromises) {
   if (expiredProm.length > 0) setTimeout(() => setPromises(ps => ps.filter(p => !expiredProm.find(e => e.id === p.id))), 0);
 }
 // Gestor de cobranza envía propuesta; cajero valida o elimina
-function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, users, pendingPayments, setPendingPayments, promises, setPromises, fxRate, setFxRate, preselClientId, onClearPresel, onSavePayment, onSavePending, onRejectPending }) {
+function FxRateEditor({ fxRate, setFxRate, onSaveFxRate }) {
+  const [draft, setDraft] = useState(fxRate.rate);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { setDraft(fxRate.rate); }, [fxRate.rate]);
+  const dirty = +draft !== +fxRate.rate;
+  const apply = async () => {
+    if (!dirty || +draft <= 0) return;
+    setSaving(true);
+    try {
+      if (onSaveFxRate) await onSaveFxRate(+draft);
+      setFxRate({ ...fxRate, rate: +draft, date: TOD });
+    } finally { setSaving(false); }
+  };
+  return (<div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
+    <div style={{ flex: 1 }}><Inp label="MXN por USD" type="number" value={draft} onChange={v => setDraft(+v)} /></div>
+    <div style={{ color: B, fontWeight: 800, fontSize: 22 }}>${fxRate.rate}</div>
+    {dirty && <Btn label={saving ? "Guardando..." : "Aplicar nuevo TC"} variant="success" onClick={apply} disabled={saving || +draft <= 0} />}
+  </div>);
+}
+
+function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, users, pendingPayments, setPendingPayments, promises, setPromises, fxRate, setFxRate, preselClientId, onClearPresel, onSavePayment, onSavePending, onRejectPending, onSaveFxRate }) {
   const isCajero = cu.role === "cajero";
   const isGestor = cu.role === "gestor";
   const [sid, setSid] = useState(preselClientId || null), [ptype, setPtype] = useState("maintenance"), [mantAmt, setMantAmt] = useState(""), [moraAmt, setMoraAmt] = useState(""), [note, setNote] = useState(""), [ok, setOk] = useState(null);
@@ -1066,11 +1192,12 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
     </div>)}
     {isCajero && (<div style={{ background: BG2, border: `1px solid ${BD}`, borderRadius: 12, padding: 18 }}>
       <Sec t="Tipo de Cambio del Día" a={<span style={{ fontSize: 10, color: T4 }}>Fecha: {fxRate.date}</span>} />
-      <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
-        <div style={{ flex: 1 }}><Inp label="MXN por USD" type="number" value={fxRate.rate} onChange={v => setFxRate({ rate: +v, date: TOD })} /></div>
-        <div style={{ color: B, fontWeight: 800, fontSize: 22 }}>${fxRate.rate}</div>
-      </div>
-      <div style={{ marginTop: 10, padding: "8px 9px", background: BG3, borderRadius: 6, fontSize: 10, color: T4 }}>Los contratos son en USD y los cobros en pesos. Este tipo de cambio se aplica a todos los cobros validados hoy.</div>
+      {(() => {
+        const [newRate, setNewRate] = [(typeof fxRate.draftRate !== 'undefined' ? fxRate.draftRate : fxRate.rate), null];
+        return null;
+      })()}
+      <FxRateEditor fxRate={fxRate} setFxRate={setFxRate} onSaveFxRate={onSaveFxRate} />
+      <div style={{ marginTop: 10, padding: "8px 9px", background: BG3, borderRadius: 6, fontSize: 10, color: T4 }}>Los contratos son en USD y los cobros en pesos. Al aplicar un nuevo TC se crea un registro histórico que afecta solo a las operaciones validadas a partir de ese momento.</div>
     </div>)}
 
     <div>
@@ -1194,7 +1321,7 @@ function ResModal({ clients, units, uts, reservations, onSave, onClose, cu, rc, 
     </div>
   </Modal>);
 }
-function ReservationsView({ clients, reservations, setReservations, units, setUnits, uts, cu, rc, payments, preselClientId, onClearPresel, onSaveReservation }) {
+function ReservationsView({ clients, reservations, setReservations, units, setUnits, uts, cu, rc, payments, preselClientId, onClearPresel, onSaveReservation, onCancelReservation }) {
   const [vtab, setVtab] = useState("avail"), [modal, setModal] = useState(preselClientId ? true : false), [confDoc, setConfDoc] = useState(null), [presel, setPresel] = useState(preselClientId || null), [filt, setFilt] = useState("All");
   const availC = useMemo(() => {
     // Clientes con mantenimiento pagado ESTE AÑO y con puntos disponibles sin usar en reservaciones
@@ -1271,14 +1398,17 @@ function ReservationsView({ clients, reservations, setReservations, units, setUn
           <td style={td()}><Bdg l={r.status} /></td>
           <td style={tFl()}>
             {r.status === "Confirmed" && <Btn label="📄" variant="ghost" small onClick={() => setConfDoc(r)} />}
-            {r.status !== "Cancelled" && <Btn label="Cancelar" variant="danger" small onClick={() => setReservations(rs => rs.map(x => x.id === r.id ? { ...x, status: "Cancelled" } : x))} />}
+            {r.status !== "Cancelled" && <Btn label="Cancelar" variant="danger" small onClick={() => {
+              setReservations(rs => rs.map(x => x.id === r.id ? { ...x, status: "Cancelled" } : x));
+              if (onCancelReservation) onCancelReservation(r.id);
+            }} />}
           </td>
         </tr>))} />
     </div>}
   </div>);
 }
 // ── COLLECTIONS ──────────────────────────────────────────────────────────────
-function CollectionsView({ clients, payments, pp, promises, setPromises, cu, fxRate, onSavePromise }) {
+function CollectionsView({ clients, payments, pp, promises, setPromises, cu, fxRate, onSavePromise, onUpdatePromise }) {
   const [filt, setFilt] = useState("All"), [vtab, setVtab] = useState("accounts"), [pMod, setPMod] = useState(null), [pDate, setPDate] = useState(new Date().toISOString().split("T")[0]), [pAmt, setPAmt] = useState(""), [pNote, setPNote] = useState("");
   const isAdmin = ["superadmin", "admin"].includes(cu.role);
   const myC = isAdmin ? clients : clients.filter(c => c.assignedGestor === cu.username);
@@ -1393,8 +1523,14 @@ function CollectionsView({ clients, payments, pp, promises, setPromises, cu, fxR
           <div><b style={{ color: T1 }}>{p.clientName}</b><span style={{ color: T3, fontSize: 10, marginLeft: 7 }}>{p.contractNo}</span>{p.note && <span style={{ color: T4, fontSize: 9, marginLeft: 7 }}>{p.note}</span>}</div>
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
             <span style={{ color: Y, fontWeight: 700 }}>{f$(p.amount)}</span>
-            <Btn label="✓" variant="success" small onClick={() => setPromises(ps => ps.map(x => x.id === p.id ? { ...x, status: "Cumplida" } : x))} />
-            <Btn label="✗" variant="danger" small onClick={() => setPromises(ps => ps.map(x => x.id === p.id ? { ...x, status: "Incumplida" } : x))} />
+            <Btn label="✓" variant="success" small onClick={() => {
+              setPromises(ps => ps.map(x => x.id === p.id ? { ...x, status: "Cumplida" } : x));
+              if (onUpdatePromise) onUpdatePromise(p.id, "Cumplida");
+            }} />
+            <Btn label="✗" variant="danger" small onClick={() => {
+              setPromises(ps => ps.map(x => x.id === p.id ? { ...x, status: "Incumplida" } : x));
+              if (onUpdatePromise) onUpdatePromise(p.id, "Incumplida");
+            }} />
           </div>
         </div>))}
       </div>}
@@ -1409,14 +1545,20 @@ function CollectionsView({ clients, payments, pp, promises, setPromises, cu, fxR
           <td style={tS()}>{p.createdAt}</td>
           <td style={td()}><Bdg l={p.status} /></td>
           <td style={tFl()}>
-            {p.status === "Pendiente" && <><Btn label="✓" variant="success" small onClick={() => setPromises(ps => ps.map(x => x.id === p.id ? { ...x, status: "Cumplida" } : x))} /><Btn label="✗" variant="danger" small onClick={() => setPromises(ps => ps.map(x => x.id === p.id ? { ...x, status: "Incumplida" } : x))} /></>}
+            {p.status === "Pendiente" && <><Btn label="✓" variant="success" small onClick={() => {
+              setPromises(ps => ps.map(x => x.id === p.id ? { ...x, status: "Cumplida" } : x));
+              if (onUpdatePromise) onUpdatePromise(p.id, "Cumplida");
+            }} /><Btn label="✗" variant="danger" small onClick={() => {
+              setPromises(ps => ps.map(x => x.id === p.id ? { ...x, status: "Incumplida" } : x));
+              if (onUpdatePromise) onUpdatePromise(p.id, "Incumplida");
+            }} /></>}
           </td>
         </tr>))} />
     </div>}
   </div>);
 }
 // ── POINT SALES ──────────────────────────────────────────────────────────────
-function PointSalesView({ clients, setClients, payments, setPayments, pp, pms, cu, pendingSales, setPendingSales }) {
+function PointSalesView({ clients, setClients, payments, setPayments, pp, pms, cu, pendingSales, setPendingSales, onSavePointSale }) {
   const isAdmin = ["superadmin", "admin"].includes(cu.role), isCajero = cu.role === "cajero";
   const [sid, setSid] = useState(null), [stype, setStype] = useState("immediate"), [pts, setPts] = useState(""), [mid, setMid] = useState("1"), [note, setNote] = useState(""), [date, setDate] = useState(new Date().toISOString().split("T")[0]), [ok, setOk] = useState(null), [eYr, setEYr] = useState(0), [eAn, setEAn] = useState(0), [showSim, setShowSim] = useState(false);
   const client = clients.find(c => c.id === sid), pm = pms.find(m => m.id === +mid) || pms[0];
@@ -1440,6 +1582,11 @@ function PointSalesView({ clients, setClients, payments, setPayments, pp, pms, c
     setPayments(ps => [...ps, p]);
     setClients(cs => cs.map(c => { if (c.id !== sale.clientId) return c; if (sale.stype === "immediate") { const a2 = c.annualPoints + sale.pts, p2 = c.paidPoints + sale.pts; return { ...c, totalPoints: c.totalPoints + sale.pts, annualPoints: a2, paidPoints: p2, balance: Math.max(0, (a2 - p2) * pp) }; } const nT = c.totalPoints + sale.pts, nCY = (c.contractYears || yr) + sale.eYr, nYR = Math.max(1, nCY - (c.yearsElapsed || 0)); const rA = sale.eAn > 0 ? c.annualPoints + sale.eAn : calcAP(nT, c.pointsUsedToDate || 0, nYR); return { ...c, totalPoints: nT, contractYears: nCY, yearsRemaining: nYR, annualPoints: rA, balance: Math.max(0, (rA - (c.paidPoints || 0)) * pp) }; }));
     setPendingSales(ps => ps.map(s => s.id === id ? { ...s, status: "Validada", validatedBy: cu.username } : s));
+    if (onSavePointSale) onSavePointSale({
+      clientId: sale.clientId, stype: sale.stype, pts: sale.pts,
+      eYr: sale.eYr || 0, eAn: sale.eAn || 0,
+      totalMxn: sale.totalCost, totalUsd: 0,
+    });
   };
   const cancel = id => setPendingSales(ps => ps.map(s => s.id === id ? { ...s, status: "Cancelada" } : s));
   const actPend = pendingSales.filter(s => s.status === "Pendiente" && new Date(s.expiresAt).getTime() > now);
@@ -1766,7 +1913,25 @@ function ReportsView({ clients, reservations, payments, pp, users, role, courtes
   </div>);
 }
 // ── CONFIG ───────────────────────────────────────────────────────────────────
-function ConfigView({ seasonOrder, setSeasonOrder, uts, setUts, units, setUnits, pp, setPp, onSaveUnit, onSaveUnitType, onRemoveUnitType }) {
+function PpEditor({ pp, setPp, onSavePricePerPoint }) {
+  const [draft, setDraft] = useState(pp);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { setDraft(pp); }, [pp]);
+  const dirty = +draft !== +pp;
+  const apply = async () => {
+    if (!dirty || +draft <= 0) return;
+    setSaving(true);
+    try { if (onSavePricePerPoint) await onSavePricePerPoint(+draft); else setPp(+draft); }
+    finally { setSaving(false); }
+  };
+  return (<div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
+    <div style={{ flex: 1 }}><Inp label="Precio ($/pt/año)" value={draft} onChange={v => setDraft(+v)} type="number" /></div>
+    <div style={{ color: B, fontWeight: 800, fontSize: 22 }}>{f$(pp)}</div>
+    {dirty && <Btn label={saving ? "Guardando..." : "Aplicar"} variant="success" onClick={apply} disabled={saving || +draft <= 0} />}
+  </div>);
+}
+
+function ConfigView({ seasonOrder, setSeasonOrder, uts, setUts, units, setUnits, pp, setPp, onSaveUnit, onSaveUnitType, onRemoveUnitType, onSavePricePerPoint }) {
   const [sec, setSec] = useState("tarifa"), [editUT, setEditUT] = useState(null), [editU, setEditU] = useState(null);
   const mO = MONTHS_ES.map((m, i) => ({ v: i + 1, l: m })), dO = Array.from({ length: 31 }, (_, i) => i + 1).map(d => ({ v: d, l: d }));
   // Orden temporadas: helpers para mover arriba/abajo
@@ -1791,10 +1956,7 @@ function ConfigView({ seasonOrder, setSeasonOrder, uts, setUts, units, setUnits,
     </div>
     {sec === "tarifa" && <div style={{ maxWidth: 400 }}><div style={{ background: BG2, border: `1px solid ${BD}`, borderRadius: 11, padding: 18 }}>
       <Sec t="Precio Mantenimiento por Punto" />
-      <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
-        <div style={{ flex: 1 }}><Inp label="Precio ($/pt/año)" value={pp} onChange={v => setPp(+v)} type="number" /></div>
-        <div style={{ color: B, fontWeight: 800, fontSize: 22 }}>{f$(pp)}</div>
-      </div>
+      <PpEditor pp={pp} setPp={setPp} onSavePricePerPoint={onSavePricePerPoint} />
       <div style={{ marginTop: 10, padding: "8px 9px", background: BG3, borderRadius: 6, fontSize: 10, color: T4 }}>Ejemplo 5,000 pts → <b style={{ color: T1 }}>{f$(5000 * pp)}</b></div>
     </div></div>}
     {sec === "orden" && <div style={{ maxWidth: 480 }}>
@@ -1925,8 +2087,10 @@ function PayMethodsView({ pms, setPms, onSavePm }) {
   </div>);
 }
 // ── COMPENSATION ─────────────────────────────────────────────────────────────
-function CompView({ users, setUsers, payments, reservations, pp, rc, setRc, cr, setCr, onSaveUser }) {
+function CompView({ users, setUsers, payments, reservations, pp, rc, setRc, cr, setCr, onSaveUser, onSaveCommissionRate, onSaveReservationFee }) {
   const [editId, setEditId] = useState(null), [form, setForm] = useState({}), [ctab, setCtab] = useState("personal");
+  const [draftRc, setDraftRc] = useState(rc);
+  useEffect(() => { setDraftRc(rc); }, [rc]);
   const setF = k => v => setForm(f => ({ ...f, [k]: v }));
   const staff = users.filter(u => u.role !== "superadmin");
   const save = () => {
@@ -1937,6 +2101,11 @@ function CompView({ users, setUsers, payments, reservations, pp, rc, setRc, cr, 
       if (userObj) onSaveUser({ id: editId, salary: newSalary });
     }
     setEditId(null);
+  };
+  const saveRc = () => {
+    if (+draftRc === +rc) return;
+    setRc(+draftRc);
+    if (onSaveReservationFee) onSaveReservationFee(+draftRc);
   };
   return (<div>
     {editId && <Modal title="Editar Compensación" onClose={() => setEditId(null)}>
@@ -1968,20 +2137,39 @@ function CompView({ users, setUsers, payments, reservations, pp, rc, setRc, cr, 
           </tr>);
         })} />
     </div>}
-    {ctab === "reservacion" && <div style={{ maxWidth: 420 }}><div style={{ background: BG2, border: `1px solid ${BD}`, borderRadius: 11, padding: 18 }}>
+    {ctab === "reservacion" && <div style={{ maxWidth: 480 }}><div style={{ background: BG2, border: `1px solid ${BD}`, borderRadius: 11, padding: 18 }}>
       <Sec t="Comisión Fija por Reservación" />
-      <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}><div style={{ flex: 1 }}><Inp label="Comisión por reservación ($)" value={rc} onChange={v => setRc(+v)} type="number" /></div><div style={{ color: P, fontWeight: 800, fontSize: 22 }}>{f$(rc)}</div></div>
+      <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
+        <div style={{ flex: 1 }}><Inp label="Comisión por reservación ($)" value={draftRc} onChange={v => setDraftRc(+v)} type="number" /></div>
+        <div style={{ color: P, fontWeight: 800, fontSize: 22 }}>{f$(rc)}</div>
+        {+draftRc !== +rc && <Btn label="Aplicar" variant="success" onClick={saveRc} />}
+      </div>
     </div></div>}
     {ctab === "concepto" && <div>
-      <div style={{ fontSize: 11, color: T3, marginBottom: 13 }}>Comisión por tipo de cobro, independiente del gestor. Se suma a la comisión personal.</div>
+      <div style={{ fontSize: 11, color: T3, marginBottom: 13 }}>Comisión por tipo de cobro, independiente del gestor. Se aplica a todos los gestores por igual.</div>
       <Tbl cols={["Concepto", "Comisión (%)", "Activo", ""]}
         rows={cr.map(r => (<tr key={r.id} style={{ borderBottom: `1px solid ${BG3}` }}>
           <td style={tW()}>{r.l}</td>
-          <td style={td()}><div style={{ display: "flex", alignItems: "center", gap: 7 }}><input type="number" value={r.pct} step="0.1" onChange={e => setCr(rs => rs.map(x => x.id === r.id ? { ...x, pct: +e.target.value } : x))} style={{ ...IS, width: 75, padding: "4px 7px", fontSize: 11 }} /><span style={{ color: Y, fontWeight: 700 }}>{r.pct}%</span></div></td>
+          <td style={td()}><CrEditor row={r} cr={cr} setCr={setCr} onSaveCommissionRate={onSaveCommissionRate} /></td>
           <td style={td()}><Bdg l={r.active ? "Active" : "Cancelado"} /></td>
           <td style={td()}><Btn label={r.active ? "Desact." : "Activar"} variant={r.active ? "danger" : "success"} small onClick={() => setCr(rs => rs.map(x => x.id === r.id ? { ...x, active: !x.active } : x))} /></td>
         </tr>))} />
     </div>}
+  </div>);
+}
+
+function CrEditor({ row, cr, setCr, onSaveCommissionRate }) {
+  const [draft, setDraft] = useState(row.pct);
+  useEffect(() => { setDraft(row.pct); }, [row.pct]);
+  const dirty = +draft !== +row.pct;
+  const apply = () => {
+    setCr(rs => rs.map(x => x.id === row.id ? { ...x, pct: +draft } : x));
+    if (onSaveCommissionRate) onSaveCommissionRate(row.id, +draft);
+  };
+  return (<div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+    <input type="number" value={draft} step="0.1" onChange={e => setDraft(+e.target.value)} style={{ ...IS, width: 75, padding: "4px 7px", fontSize: 11 }} />
+    <span style={{ color: Y, fontWeight: 700 }}>{row.pct}%</span>
+    {dirty && <Btn label="Aplicar" variant="success" small onClick={apply} />}
   </div>);
 }
 // ── USERS / TEAM / CONTRACTS / COURTESIES ────────────────────────────────────
@@ -2029,12 +2217,17 @@ function UsersView({ cu, users, setUsers, rc, onSaveUser }) {
     </tr>))} />
   </div>);
 }
-function TeamView({ users, setUsers, clients, setClients, payments, reservations }) {
+function TeamView({ users, setUsers, clients, setClients, payments, reservations, onAssignGestor, onCancelContract }) {
   const [ttab, setTtab] = useState("list"), [modal, setModal] = useState(null), [form, setForm] = useState({}), [agt, setAgt] = useState(""), [selC, setSelC] = useState([]);
   const setF = k => v => setForm(f => ({ ...f, [k]: v }));
   const gestors = users.filter(u => u.role === "gestor");
   const save = () => { if (modal === "new") setUsers(us => [...us, { ...form, id: Date.now(), role: "gestor", active: true, commissions: { collection: 0 }, salary: +(form.salary || 0) }]); else setUsers(us => us.map(u => u.id === modal.id ? { ...u, ...form, salary: +(form.salary || 0) } : u)); setModal(null); };
-  const doAssign = () => { if (!agt || !selC.length) return; setClients(cs => cs.map(c => selC.includes(c.id) ? { ...c, assignedGestor: agt } : c)); setSelC([]); setAgt(""); };
+  const doAssign = () => {
+    if (!agt || !selC.length) return;
+    setClients(cs => cs.map(c => selC.includes(c.id) ? { ...c, assignedGestor: agt } : c));
+    if (onAssignGestor) selC.forEach(cid => onAssignGestor(cid, +agt));
+    setSelC([]); setAgt("");
+  };
   return (<div>
     {modal && <Modal title={modal === "new" ? "Nuevo Gestor" : "Editar Gestor"} onClose={() => setModal(null)}>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}><div style={{ gridColumn: "1/-1" }}><Inp label="Nombre completo" value={form.name || ""} onChange={setF("name")} /></div><Inp label="Usuario" value={form.username || ""} onChange={setF("username")} /><Inp label="Contraseña" value={form.password || ""} onChange={setF("password")} /><Inp label="Sueldo mensual ($)" value={form.salary || 0} onChange={v => setF("salary")(+v)} type="number" /><Inp label="Color" value={form.color || P} onChange={setF("color")} /></div>
@@ -2084,7 +2277,10 @@ function TeamView({ users, setUsers, clients, setClients, payments, reservations
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}><span style={{ color: g.color, fontWeight: 700, fontSize: 12 }}>{g.name}</span><span style={{ color: T4, fontSize: 10 }}>{gC.length} cuentas</span></div>
             {gC.map(c => (<div key={c.id} style={{ padding: "4px 7px", background: BG3, borderRadius: 4, marginBottom: 2, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <span style={{ color: T2, fontSize: 11 }}>{c.name}</span>
-              <div style={{ display: "flex", gap: 6, alignItems: "center" }}><span style={{ color: c.balance > 0 ? R : G, fontSize: 10 }}>{f$(c.balance)}</span><Btn label="Quitar" variant="danger" small onClick={() => setClients(cs => cs.map(x => x.id === c.id ? { ...x, assignedGestor: "" } : x))} /></div>
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}><span style={{ color: c.balance > 0 ? R : G, fontSize: 10 }}>{f$(c.balance)}</span><Btn label="Quitar" variant="danger" small onClick={() => {
+                setClients(cs => cs.map(x => x.id === c.id ? { ...x, assignedGestor: "" } : x));
+                if (onAssignGestor) onAssignGestor(c.id, null);
+              }} /></div>
             </div>))}
             {gC.length === 0 && <div style={{ fontSize: 10, color: T4, padding: "4px 0" }}>Sin cuentas</div>}
           </div>);
@@ -2115,6 +2311,7 @@ function ContractsView({ clients, setClients }) {
           <Btn label="Confirmar Cancelación" variant="danger" onClick={() => {
             // Al cancelar el cliente PIERDE TODOS los puntos (paidPoints + savedPoints)
             setClients(cs => cs.map(c => c.id === modal.id ? { ...c, contractStatus: type, cancelReason: reason, cancelDate: new Date().toISOString().split("T")[0], paidPoints: 0, savedPoints: [] } : c));
+            if (onCancelContract) onCancelContract(modal.id, type, reason);
             setModal(null); setReason("");
           }} />
         </div>
@@ -2137,7 +2334,10 @@ function ContractsView({ clients, setClients }) {
         <td style={td()}><Bdg l={c.contractStatus} /></td>
         <td style={tS()}>{c.cancelDate || "—"}</td>
         <td style={td({ color: T4, fontSize: 10, maxWidth: 140 })}>{c.cancelReason || "—"}</td>
-        <td style={td()}>{c.contractStatus === "Active" ? <Btn label="Cancelar" variant="danger" small onClick={() => setModal(c)} /> : <Btn label="Reactivar" variant="success" small onClick={() => setClients(cs => cs.map(x => x.id === c.id ? { ...x, contractStatus: "Active", cancelReason: "", cancelDate: "" } : x))} />}</td>
+        <td style={td()}>{c.contractStatus === "Active" ? <Btn label="Cancelar" variant="danger" small onClick={() => setModal(c)} /> : <Btn label="Reactivar" variant="success" small onClick={() => {
+          setClients(cs => cs.map(x => x.id === c.id ? { ...x, contractStatus: "Active", cancelReason: "", cancelDate: "" } : x));
+          if (onCancelContract) onCancelContract(c.id, "Active", "Reactivado");
+        }} />}</td>
       </tr>))} />
   </div>);
 }
@@ -2247,7 +2447,7 @@ function Dashboard({ clients, reservations, payments, pp, promises, users }) {
 }
 
 // ── MY ACCOUNT (GESTOR) ──────────────────────────────────────────────────────
-function MyAccountView({ cu, users, payments, pms, fxRate }) {
+function MyAccountView({ cu, users, payments, pms, fxRate, cr }) {
   const userRecord = users.find(u => u.username === cu.username) || cu;
   const sueldo = userRecord.salary || 0;
   // Filtrar pagos del mes actual del gestor
@@ -2261,12 +2461,19 @@ function MyAccountView({ cu, users, payments, pms, fxRate }) {
   });
   const fx = fxRate?.rate || 17.5;
   const cobradoMxn = myPayments.reduce((a, p) => a + (p.amount || 0), 0);
-  // Comisiones
+  // Comisiones por concepto desde tabla cr (parejo para todos los gestores)
+  const getCrPct = (conceptId) => {
+    const r = (cr || []).find(x => x.id === conceptId && x.active !== false);
+    return r ? (r.pct / 100) : 0;
+  };
   const comisiones = myPayments.reduce((a, p) => {
     const mantNeto = (p.amountMant || 0) * fx;
     const moraNeto = (p.amountMora || 0) * fx;
     const isP = p.isPrepago;
-    return a + (isP ? mantNeto * 0.01 : mantNeto * 0.02) + moraNeto * 0.03;
+    // prepago usa "maintenance" pero con tasa propia si existe; si no, usa maintenance
+    const cMantPct = isP ? (getCrPct('prepago') || getCrPct('maintenance') || 0.01) : (getCrPct('maintenance') || 0.02);
+    const cMoraPct = getCrPct('moratorios') || 0.03;
+    return a + mantNeto * cMantPct + moraNeto * cMoraPct;
   }, 0);
   // Costos financieros
   const costosFin = myPayments.reduce((a, p) => {
@@ -2326,7 +2533,9 @@ function MyAccountView({ cu, users, payments, pms, fxRate }) {
         <Tbl cols={["Fecha", "Cliente", "Concepto", "Monto", "Medio", "Comisión"]} rows={myPayments.map(p => {
           const mantNeto = (p.amountMant || 0) * fx;
           const moraNeto = (p.amountMora || 0) * fx;
-          const com = (p.isPrepago ? mantNeto * 0.01 : mantNeto * 0.02) + moraNeto * 0.03;
+          const mantPct = p.isPrepago ? (getCrPct('prepago') || 0.01) : (getCrPct('maintenance') || 0.02);
+          const moraPct = getCrPct('moratorios') || 0.03;
+          const com = mantNeto * mantPct + moraNeto * moraPct;
           const pmName = pms.find(m => m.id === p.methodId)?.name || p.method || "—";
           return (<tr key={p.id} style={{ borderBottom: `1px solid ${BG3}` }}>
             <td style={tG3()}>{p.date}</td>
@@ -2389,6 +2598,32 @@ export default function App() {
 
       const dbUts = await fetchUnitTypes();
       if (dbUts.length > 0) setUts(dbUts);
+
+      // Cargar comisiones por concepto y config de sistema
+      try {
+        const dbCr = await fetchCommissionRates();
+        if (dbCr.length > 0) {
+          const merged = INIT_CR.map(init => {
+            const dbMatch = dbCr.find(d =>
+              d.concept === init.id ||
+              (init.id === 'point_purchase' && d.concept === 'point_sale')
+            );
+            return dbMatch ? { ...init, pct: dbMatch.ratePct, l: dbMatch.label || init.l } : init;
+          });
+          // Agregar conceptos de BD que no estén en INIT_CR
+          dbCr.forEach(d => {
+            if (!merged.find(m => m.id === d.concept)) {
+              merged.push({ id: d.concept, l: d.label || d.concept, pct: d.ratePct, active: true });
+            }
+          });
+          setCr(merged);
+        }
+      } catch (e) { console.warn('No se pudo cargar commission_rates:', e.message); }
+      try {
+        const dbCfg = await fetchSystemConfig();
+        if (dbCfg.pricePerPoint) setPp(dbCfg.pricePerPoint);
+        if (dbCfg.reservationFee) setRc(dbCfg.reservationFee);
+      } catch (e) { console.warn('No se pudo cargar system_config:', e.message); }
 
       // Calcular occ en units desde reservaciones
       const unitsWithOcc = dbUnits.map(u => ({
@@ -2494,14 +2729,9 @@ export default function App() {
           console.log('Pending payment marked as validated:', paymentObj.pendingPaymentId);
         } catch (e) { console.error('Error updating pending status:', e); }
       }
-      // Actualizar cliente en DB
-      if (clientUpdates) {
-        await updateClient(paymentObj.clientId, {
-          paid_points: clientUpdates.paidPoints,
-          balance_usd: clientUpdates.balance,
-          account_status: clientUpdates.status,
-        });
-      }
+      // NO actualizamos paid_points ni balance_usd en clients — ahora son DERIVED:
+      // se calculan dinámicamente desde la suma de pagos en cada loadAll().
+      // Solo actualizamos account_status si cambió.
       // Recargar datos
       await loadAll();
     } catch (e) {
@@ -2665,6 +2895,183 @@ export default function App() {
     }
   };
 
+  // ─── CLIENTES (todas las operaciones a BD) ────────────────
+  const saveClient = async (c) => {
+    try {
+      if (!c.id || c.id > 1000000000) {
+        await insertClient(c);
+      } else {
+        const dbFields = {
+          contract_no: c.contractNo,
+          full_name: c.name,
+          contract_date: c.contractDate || null,
+          contract_years: c.contractYears || 10,
+          years_elapsed: c.yearsElapsed || 0,
+          total_points: c.totalPoints || 0,
+          points_used_to_date: c.pointsUsedToDate || 0,
+          annual_points: c.annualPoints || 0,
+          due_date: c.dueDate || null,
+          assigned_gestor_id: c.assignedGestor ? +c.assignedGestor : null,
+        };
+        await updateClient(c.id, dbFields);
+      }
+      await loadAll();
+    } catch (e) {
+      console.error('Error guardando cliente:', e);
+      alert('Error guardando cliente: ' + (e.message || JSON.stringify(e)));
+    }
+  };
+
+  // Phones / Emails / Addresses — agregar nueva info (no editar/borrar existentes)
+  const addClientPhone = async (clientId, label, number) => {
+    try { await insertClientPhone(clientId, label, number, true); await loadAll(); }
+    catch (e) { console.error(e); alert('Error: ' + (e.message || JSON.stringify(e))); }
+  };
+  const setClientPhoneActive = async (id, isActive) => {
+    try { await updateClientPhone(id, isActive); await loadAll(); }
+    catch (e) { console.error(e); alert('Error: ' + (e.message || JSON.stringify(e))); }
+  };
+  const addClientEmail = async (clientId, label, email) => {
+    try { await insertClientEmail(clientId, label, email, true); await loadAll(); }
+    catch (e) { console.error(e); alert('Error: ' + (e.message || JSON.stringify(e))); }
+  };
+  const setClientEmailActive = async (id, isActive) => {
+    try { await updateClientEmail(id, isActive); await loadAll(); }
+    catch (e) { console.error(e); alert('Error: ' + (e.message || JSON.stringify(e))); }
+  };
+  const addClientAddress = async (clientId, label, address) => {
+    try { await insertClientAddress(clientId, label, address, true); await loadAll(); }
+    catch (e) { console.error(e); alert('Error: ' + (e.message || JSON.stringify(e))); }
+  };
+  const setClientAddressActive = async (id, isActive) => {
+    try { await updateClientAddress(id, isActive); await loadAll(); }
+    catch (e) { console.error(e); alert('Error: ' + (e.message || JSON.stringify(e))); }
+  };
+  const addClientComment = async (clientId, body) => {
+    try {
+      const dbUser = users.find(u => u.username === cu?.username);
+      await insertClientComment(clientId, body, dbUser?.id || null);
+      await loadAll();
+    } catch (e) { console.error(e); alert('Error: ' + (e.message || JSON.stringify(e))); }
+  };
+
+  // Guardar puntos (SavePointsModal)
+  const saveSavedPoints = async (clientId, points, maintYear, note) => {
+    try {
+      const dbUser = users.find(u => u.username === cu?.username);
+      await insertSavedPoints(clientId, points, maintYear, dbUser?.id || null, note);
+      await loadAll();
+    } catch (e) {
+      console.error('Error guardando puntos:', e);
+      alert('Error guardando puntos: ' + (e.message || JSON.stringify(e)));
+    }
+  };
+
+  // Cancelar reservación
+  const cancelReservation = async (id) => {
+    try {
+      await updateReservation(id, { status: 'Cancelled' });
+      await loadAll();
+    } catch (e) {
+      console.error('Error cancelando reservación:', e);
+      alert('Error cancelando reservación: ' + (e.message || JSON.stringify(e)));
+    }
+  };
+
+  // Marcar promesa como cumplida/incumplida
+  const updatePromiseStatus = async (id, newStatus) => {
+    try {
+      const dbStatus = newStatus === 'Cumplida' ? 'fulfilled' : 'expired';
+      const fields = { status: dbStatus };
+      if (dbStatus === 'fulfilled') fields.fulfilled_date = new Date().toISOString().split('T')[0];
+      await updatePromise(id, fields);
+      await loadAll();
+    } catch (e) {
+      console.error('Error actualizando promesa:', e);
+      alert('Error actualizando promesa: ' + (e.message || JSON.stringify(e)));
+    }
+  };
+
+  // Guardar venta de puntos
+  const savePointSale = async (sale) => {
+    try {
+      const dbUser = users.find(u => u.username === cu?.username);
+      await insertPointSale(sale, dbUser?.id || null);
+      await loadAll();
+    } catch (e) {
+      console.error('Error guardando venta:', e);
+      alert('Error guardando venta: ' + (e.message || JSON.stringify(e)));
+    }
+  };
+
+  // Asignar/Quitar gestor (solo admin/superadmin desde TeamView)
+  const assignGestor = async (clientId, gestorUserId) => {
+    try {
+      await updateClient(clientId, { assigned_gestor_id: gestorUserId });
+      await loadAll();
+    } catch (e) {
+      console.error(e); alert('Error: ' + (e.message || JSON.stringify(e)));
+    }
+  };
+
+  // Cancelar contrato
+  const cancelContract = async (clientId, type, reason) => {
+    try {
+      await cancelClientContract(clientId, reason, type);
+      await loadAll();
+    } catch (e) {
+      console.error(e); alert('Error: ' + (e.message || JSON.stringify(e)));
+    }
+  };
+
+  // Guardar tipo de cambio (NUEVO registro histórico)
+  const saveFxRate = async (newRate) => {
+    try {
+      const dbUser = users.find(u => u.username === cu?.username);
+      const inserted = await insertFxRate(newRate, dbUser?.id || null);
+      await loadAll();
+      return inserted;
+    } catch (e) {
+      console.error('Error guardando TC:', e);
+      alert('Error guardando TC: ' + (e.message || JSON.stringify(e)));
+    }
+  };
+
+  // Guardar precio por punto (system_config)
+  const savePricePerPoint = async (newPrice) => {
+    try {
+      await upsertSystemConfig('price_per_point', newPrice);
+      setPp(newPrice);
+      await loadAll();
+    } catch (e) {
+      console.error(e); alert('Error: ' + (e.message || JSON.stringify(e)));
+    }
+  };
+
+  // Guardar comisión por reserva
+  const saveReservationFee = async (newFee) => {
+    try {
+      await upsertSystemConfig('reservation_fee', newFee);
+      setRc(newFee);
+      await loadAll();
+    } catch (e) {
+      console.error(e); alert('Error: ' + (e.message || JSON.stringify(e)));
+    }
+  };
+
+  // Guardar comisión por concepto
+  const saveCommissionRate = async (concept, ratePct) => {
+    try {
+      // Mapear IDs locales a concept_id de BD
+      const conceptIdMap = { point_purchase: 'point_sale' };
+      const dbConcept = conceptIdMap[concept] || concept;
+      await upsertCommissionRate(dbConcept, ratePct);
+      await loadAll();
+    } catch (e) {
+      console.error(e); alert('Error: ' + (e.message || JSON.stringify(e)));
+    }
+  };
+
   const login = u => { setCu(u); setTab(RT[u.role][0]); };
   const logout = () => { setCu(null); setTab(null); setClients([]); setPayments([]); };
 
@@ -2727,20 +3134,20 @@ export default function App() {
       <div style={{ flex: 1, overflowY: "auto", padding: 20 }}>
         <div style={{ fontSize: 15, fontWeight: 800, color: T2, marginBottom: 15, letterSpacing: ".03em" }}>{active?.l}</div>
         {tab === "dash" && <Dashboard clients={clients} reservations={reservations} payments={payments} pp={pp} promises={promises} users={users} />}
-        {tab === "clients" && <ClientsView clients={clients} setClients={setClients} pp={pp} cu={cu} payments={payments} reservations={reservations} onGoToCashier={cid => { setPreselClient(cid); setTab("cashier"); }} onGoToRes={cid => { setPreselResClient(cid); setTab("res"); }} />}
-        {tab === "cashier" && <CashierView clients={clients} payments={payments} setPayments={setPayments} setClients={setClients} pp={pp} pms={pms} cu={cu} users={users} pendingPayments={pendingPayments} setPendingPayments={setPendingPayments} promises={promises} setPromises={setPromises} fxRate={fxRate} setFxRate={setFxRate} preselClientId={preselClient} onClearPresel={() => setPreselClient(null)} onSavePayment={savePayment} onSavePending={savePendingPayment} onRejectPending={rejectPendingPayment} />}
-        {tab === "res" && <ReservationsView clients={clients} reservations={reservations} setReservations={setReservations} units={units} setUnits={setUnits} uts={uts} cu={cu} rc={rc} payments={payments} preselClientId={preselResClient} onClearPresel={() => setPreselResClient(null)} onSaveReservation={saveReservation} />}
-        {tab === "col" && <CollectionsView clients={clients} payments={payments} pp={pp} promises={promises} setPromises={setPromises} cu={cu} fxRate={fxRate} onSavePromise={savePromise} />}
+        {tab === "clients" && <ClientsView clients={clients} setClients={setClients} pp={pp} cu={cu} payments={payments} reservations={reservations} users={users} onGoToCashier={cid => { setPreselClient(cid); setTab("cashier"); }} onGoToRes={cid => { setPreselResClient(cid); setTab("res"); }} onSaveClient={saveClient} onAddPhone={addClientPhone} onSetPhoneActive={setClientPhoneActive} onAddEmail={addClientEmail} onSetEmailActive={setClientEmailActive} onAddAddress={addClientAddress} onSetAddressActive={setClientAddressActive} onAddComment={addClientComment} onSaveSavedPoints={saveSavedPoints} />}
+        {tab === "cashier" && <CashierView clients={clients} payments={payments} setPayments={setPayments} setClients={setClients} pp={pp} pms={pms} cu={cu} users={users} pendingPayments={pendingPayments} setPendingPayments={setPendingPayments} promises={promises} setPromises={setPromises} fxRate={fxRate} setFxRate={setFxRate} preselClientId={preselClient} onClearPresel={() => setPreselClient(null)} onSavePayment={savePayment} onSavePending={savePendingPayment} onRejectPending={rejectPendingPayment} onSaveFxRate={saveFxRate} />}
+        {tab === "res" && <ReservationsView clients={clients} reservations={reservations} setReservations={setReservations} units={units} setUnits={setUnits} uts={uts} cu={cu} rc={rc} payments={payments} preselClientId={preselResClient} onClearPresel={() => setPreselResClient(null)} onSaveReservation={saveReservation} onCancelReservation={cancelReservation} />}
+        {tab === "col" && <CollectionsView clients={clients} payments={payments} pp={pp} promises={promises} setPromises={setPromises} cu={cu} fxRate={fxRate} onSavePromise={savePromise} onUpdatePromise={updatePromiseStatus} />}
         {tab === "reports" && <ReportsView clients={clients} reservations={reservations} payments={payments} pp={pp} users={users} role={cu.role} courtesies={courtesies} rc={rc} />}
-        {tab === "config" && <ConfigView seasonOrder={seasonOrder} setSeasonOrder={setSeasonOrder} uts={uts} setUts={setUts} units={units} setUnits={setUnits} pp={pp} setPp={setPp} onSaveUnit={saveUnit} onSaveUnitType={saveUnitType} onRemoveUnitType={removeUnitType} />}
+        {tab === "config" && <ConfigView seasonOrder={seasonOrder} setSeasonOrder={setSeasonOrder} uts={uts} setUts={setUts} units={units} setUnits={setUnits} pp={pp} setPp={setPp} onSaveUnit={saveUnit} onSaveUnitType={saveUnitType} onRemoveUnitType={removeUnitType} onSavePricePerPoint={savePricePerPoint} />}
         {tab === "pmethods" && <PayMethodsView pms={pms} setPms={setPms} onSavePm={savePaymentMethod} />}
-        {tab === "comp" && <CompView users={users} setUsers={setUsers} payments={payments} reservations={reservations} pp={pp} rc={rc} setRc={setRc} cr={cr} setCr={setCr} onSaveUser={saveUser} />}
+        {tab === "comp" && <CompView users={users} setUsers={setUsers} payments={payments} reservations={reservations} pp={pp} rc={rc} setRc={setRc} cr={cr} setCr={setCr} onSaveUser={saveUser} onSaveCommissionRate={saveCommissionRate} onSaveReservationFee={saveReservationFee} />}
         {tab === "users" && <UsersView cu={cu} users={users} setUsers={setUsers} rc={rc} onSaveUser={saveUser} />}
-        {tab === "team" && <TeamView users={users} setUsers={setUsers} clients={clients} setClients={setClients} payments={payments} reservations={reservations} />}
+        {tab === "team" && <TeamView users={users} setUsers={setUsers} clients={clients} setClients={setClients} payments={payments} reservations={reservations} onAssignGestor={assignGestor} onCancelContract={cancelContract} />}
         {tab === "contracts" && <ContractsView clients={clients} setClients={setClients} />}
         {tab === "courtesies" && <CourtesiesView clients={clients} setClients={setClients} courtesies={courtesies} setCourtesies={setCourtesies} pp={pp} cu={cu} />}
-        {tab === "ec" && <MyAccountView cu={cu} users={users} payments={payments} pms={pms} fxRate={fxRate} />}
-        {tab === "ps" && <PointSalesView clients={clients} setClients={setClients} payments={payments} setPayments={setPayments} pp={pp} pms={pms} cu={cu} pendingSales={pendingSales} setPendingSales={setPendingSales} />}
+        {tab === "ec" && <MyAccountView cu={cu} users={users} payments={payments} pms={pms} fxRate={fxRate} cr={cr} />}
+        {tab === "ps" && <PointSalesView clients={clients} setClients={setClients} payments={payments} setPayments={setPayments} pp={pp} pms={pms} cu={cu} pendingSales={pendingSales} setPendingSales={setPendingSales} onSavePointSale={savePointSale} />}
       </div>
     </div>
   </div>);
