@@ -686,17 +686,20 @@ export async function fetchSystemConfig() {
 }
 
 export async function upsertSystemConfig(key, value) {
-  // system_config es una sola fila (id=1), con columnas especificas
+  // system_config es una sola fila, con columnas especificas
   const colMap = {
     price_per_point: 'price_per_point_usd',
     reservation_fee: 'reservation_commission_usd',
   };
   const col = colMap[key];
   if (!col) { console.warn('upsertSystemConfig: columna desconocida', key); return; }
+  // Obtener el id real de la fila (no asumir que es 1)
+  const { data: row } = await supabase.from('system_config').select('id').single();
+  const rowId = row?.id || 1;
   const { error } = await supabase
     .from('system_config')
-    .update({ [col]: value, updated_at: new Date().toISOString() })
-    .eq('id', 1);
+    .update({ [col]: value })
+    .eq('id', rowId);
   if (error) throw error;
 }
 

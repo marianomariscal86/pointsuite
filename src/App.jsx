@@ -2241,13 +2241,14 @@ function UsersView({ cu, users, setUsers, rc, onSaveUser }) {
     </tr>))} />
   </div>);
 }
-function TeamView({ users, setUsers, clients, setClients, payments, reservations, onAssignGestor, onCancelContract, onSaveUser }) {
+function TeamView({ users, setUsers, clients, setClients, payments, reservations, onAssignGestor, onCancelContract, onSaveUser, cu }) {
   const [ttab, setTtab] = useState("list"), [modal, setModal] = useState(null), [form, setForm] = useState({}), [agt, setAgt] = useState(""), [selC, setSelC] = useState([]);
   const setF = k => v => setForm(f => ({ ...f, [k]: v }));
+  const isSuperAdmin = cu?.role === "superadmin";
   const gestors = users.filter(u => u.role === "gestor");
   const save = () => {
     const isNew = modal === "new";
-    const obj = { ...form, role: "gestor", active: true, salary: +(form.salary || 0), commissions: { collection: 0 } };
+    const obj = { ...form, role: form.role || "gestor", active: true, salary: +(form.salary || 0), commissions: { collection: 0 } };
     if (isNew) setUsers(us => [...us, { ...obj, id: Date.now() }]);
     else setUsers(us => us.map(u => u.id === modal.id ? { ...u, ...obj } : u));
     if (onSaveUser) onSaveUser(isNew ? obj : { ...obj, id: modal.id });
@@ -2260,9 +2261,21 @@ function TeamView({ users, setUsers, clients, setClients, payments, reservations
     setSelC([]); setAgt("");
   };
   return (<div>
-    {modal && <Modal title={modal === "new" ? "Nuevo Gestor" : "Editar Gestor"} onClose={() => setModal(null)}>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}><div style={{ gridColumn: "1/-1" }}><Inp label="Nombre completo" value={form.name || ""} onChange={setF("name")} /></div><Inp label="Usuario" value={form.username || ""} onChange={setF("username")} /><Inp label="Contraseña" value={form.password || ""} onChange={setF("password")} /><Inp label="Sueldo mensual ($)" value={form.salary || 0} onChange={v => setF("salary")(+v)} type="number" /><Inp label="Color" value={form.color || P} onChange={setF("color")} /></div>
-      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}><Btn label="Cancelar" variant="ghost" onClick={() => setModal(null)} /><Btn label="Guardar" onClick={save} /></div>
+    {modal && <Modal title={modal === "new" ? "Nuevo Usuario" : "Editar Gestor"} onClose={() => setModal(null)}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <div style={{ gridColumn: "1/-1" }}><Inp label="Nombre completo" value={form.name || ""} onChange={setF("name")} /></div>
+        <Inp label="Usuario" value={form.username || ""} onChange={setF("username")} />
+        <Inp label="Contraseña" value={form.password || ""} onChange={setF("password")} />
+        {modal === "new" && isSuperAdmin && <div style={{ gridColumn: "1/-1" }}>
+          <Inp label="Rol" value={form.role || "gestor"} onChange={setF("role")} opts={[{ v: "gestor", l: "Gestor" }, { v: "cajero", l: "Cajero" }, { v: "admin", l: "Admin" }]} />
+        </div>}
+        <Inp label="Sueldo mensual ($)" value={form.salary || 0} onChange={v => setF("salary")(+v)} type="number" />
+        <Inp label="Color" value={form.color || P} onChange={setF("color")} />
+      </div>
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}>
+        <Btn label="Cancelar" variant="ghost" onClick={() => setModal(null)} />
+        <Btn label="Guardar" onClick={save} />
+      </div>
     </Modal>}
     <div style={{ display: "flex", gap: 5, marginBottom: 14 }}>
       {[["list", "Gestores"], ["assign", "Asignación Cuentas"]].map(([id, l]) => (
@@ -2270,7 +2283,9 @@ function TeamView({ users, setUsers, clients, setClients, payments, reservations
       ))}
     </div>
     {ttab === "list" && <div>
-      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}><Btn label="+ Nuevo Gestor" onClick={() => { setForm({ username: "", password: "", name: "", color: P, salary: 0 }); setModal("new"); }} /></div>
+      {isSuperAdmin && <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+        <Btn label="+ Nuevo Usuario" onClick={() => { setForm({ username: "", password: "", name: "", role: "gestor", color: P, salary: 0 }); setModal("new"); }} />
+      </div>}
       <Tbl cols={["Gestor", "Usuario", "Sueldo", "Com.", "Cobros YTD", "Reservas", "Estado", ""]}
         rows={gestors.map(g => {
           const gP = payments.filter(p => p.processedBy === g.username), gR = reservations.filter(r => r.processedBy === g.username); return (<tr key={g.id} style={{ borderBottom: `1px solid ${BG3}`, opacity: g.active === false ? .4 : 1 }}>
@@ -3471,7 +3486,7 @@ export default function App() {
         {tab === "pmethods" && <PayMethodsView pms={pms} setPms={setPms} onSavePm={savePaymentMethod} />}
         {tab === "comp" && <CompView users={users} setUsers={setUsers} payments={payments} reservations={reservations} pp={pp} rc={rc} setRc={setRc} cr={cr} setCr={setCr} onSaveUser={saveUser} onSaveCommissionRate={saveCommissionRate} onSaveReservationFee={saveReservationFee} />}
         {tab === "users" && <UsersView cu={cu} users={users} setUsers={setUsers} rc={rc} onSaveUser={saveUser} />}
-        {tab === "team" && <TeamView users={users} setUsers={setUsers} clients={clients} setClients={setClients} payments={payments} reservations={reservations} onAssignGestor={assignGestor} onCancelContract={cancelContract} onSaveUser={saveUser} />}
+        {tab === "team" && <TeamView users={users} setUsers={setUsers} clients={clients} setClients={setClients} payments={payments} reservations={reservations} onAssignGestor={assignGestor} onCancelContract={cancelContract} onSaveUser={saveUser} cu={cu} />}
         {tab === "contracts" && <ContractsView clients={clients} setClients={setClients} />}
         {tab === "courtesies" && <CourtesiesView clients={clients} setClients={setClients} courtesies={courtesies} setCourtesies={setCourtesies} pp={pp} cu={cu} users={users} onSaveCourtesy={saveCourtesy} />}
         {tab === "special" && <SpecialMgmtView clients={clients} payments={payments} condonations={condonations} setCondonations={setCondonations} cu={cu} users={users} pp={pp} onSaveCondonation={saveCondonation} onSaveRecoveredPoints={saveRecoveredPoints} />}
