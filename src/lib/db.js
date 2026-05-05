@@ -9,7 +9,7 @@ export async function fetchClients() {
       client_phones(*),
       client_emails(*),
       client_addresses(*),
-      client_comments(*),
+      client_comments(*, users!author_id(username, full_name)),
       client_saved_points(*)
     `)
     .order('id');
@@ -25,8 +25,7 @@ export async function updateClient(id, fields) {
   if (error) throw error;
 }
 
-export async function insertSavedPoints(clientId, points, maintYear, savedBy, note) {
-  // Los puntos guardados vencen el 31 dic del año siguiente al actual
+export async function insertSavedPoints(clientId, points, maintYear, savedById, note) {
   const expiryYear = new Date().getFullYear() + 1;
   const expiryDate = new Date(expiryYear, 11, 31).toISOString().split("T")[0];
   const { data, error } = await supabase
@@ -35,7 +34,9 @@ export async function insertSavedPoints(clientId, points, maintYear, savedBy, no
       client_id: clientId,
       points: points,
       expiry_date: expiryDate,
+      year_origin: maintYear || null,
       maint_year: maintYear || null,
+      saved_by: savedById || null,
       saved_at: new Date().toISOString(),
       note: note || null,
     }])
@@ -77,7 +78,9 @@ function mapClient(c) {
       text: cm.body || '',
       body: cm.body || '',
       author: cm.author_id ? String(cm.author_id) : '',
-      date: cm.created_at?.slice(0, 10)
+      authorName: cm.users?.full_name || cm.users?.username || '',
+      date: cm.created_at?.slice(0, 10),
+      created_at: cm.created_at,
     })),
   };
 }
@@ -161,13 +164,35 @@ export async function fetchReservations() {
 }
 
 export async function insertReservation(r) {
+  const dbRow = {
+    client_id: r.client_id,
+    unit_id: r.unit_id,
+    season: r.season || null,
+    check_in: r.check_in,
+    check_out: r.check_out,
+    nights: r.nights || 0,
+    points_used: r.points_used || 0,
+    status: r.status || 'Confirmed',
+    processed_by: r.processed_by || null,
+    reservation_commission_usd: r.reservation_commission_usd || 0,
+  };
   const { data, error } = await supabase
     .from('reservations')
-    .insert([r])
+    .insert([dbRow])
     .select()
     .single();
   if (error) throw error;
   return data;
+}
+
+export async function updateReservation(id, fields) {
+  const dbFields = {};
+  if (fields.status !== undefined) dbFields.status = fields.status;
+  if (fields.status === 'Cancelled') dbFields.cancelled_at = new Date().toISOString();
+  if (fields.checkIn !== undefined) dbFields.check_in = fields.checkIn;
+  if (fields.checkOut !== undefined) dbFields.check_out = fields.checkOut;
+  const { error } = await supabase.from('reservations').update(dbFields).eq('id', id);
+  if (error) throw error;
 }
 
 // ─── UNIDADES ─────────────────────────────────────────────
@@ -542,24 +567,80 @@ export async function updateReservation(id, fields) {
 }
 
 // ─── VENTA DE PUNTOS ──────────────────────────────────────
-export async function insertPointSale(s, processedBy) {
+export async function insertPointSale(s, submittedById) {
+  // Columns: id, client_id, submitted_by, validated_by, sale_type, points_to_add,
+  // price_usd, total_mxn, new_total_points, new_annual_points, new_contract_years,
+  // payment_id, status, submitted_at, validated_at, note
   const { data, error } = await supabase
     .from('point_sales')
     .insert([{
       client_id: s.clientId,
-      sale_type: s.stype,
-      points: s.pts,
-      extra_years: s.eYr || 0,
-      extra_annual: s.eAn || 0,
+      submitted_by: submittedById,
+      validated_by: submittedById,
+      sale_type: s.stype || 'points',
+      points_to_add: s.pts || 0,
+      price_usd: s.totalUsd || 0,
       total_mxn: s.totalMxn || 0,
-      total_usd: s.totalUsd || 0,
-      processed_by: processedBy,
-      sale_date: new Date().toISOString().split('T')[0],
+      new_total_points: s.newTotalPoints || null,
+      new_annual_points: s.newAnnualPoints || null,
+      new_contract_years: s.newContractYears || null,
       status: 'validated',
+      submitted_at: new Date().toISOString(),
+      validated_at: new Date().toISOString(),
+      note: s.note || null,
     }])
     .select().single();
   if (error) throw error;
   return data;
+}
+
+export async function softDeletePayment(id) {
+  const { error } = await supabase
+    .from('payments')
+    .update({ is_deleted: true })
+    .eq('id', id);
+  if (error) throw error;
+}
+
+export async function insertCourtesy(c) {
+  // Columns: client_id, granted_by, courtesy_type (points/balance_reduction/free_reservation),
+  // category, amount, reason, courtesy_date
+  const { data, error } = await supabase
+    .from('courtesies')
+    .insert([{
+      client_id: c.clientId,
+      granted_by: c.grantedBy,
+      courtesy_type: c.ctype || 'points',
+      category: c.category || 'points',
+      amount: c.amount || 0,
+      reason: c.reason || '',
+      courtesy_date: new Date().toISOString().split('T')[0],
+    }])
+    .select().single();
+  if (error) throw error;
+  return data;
+}
+
+export async function fetchCourtesies() {
+  const { data, error } = await supabase
+    .from('courtesies')
+    .select('*, clients(full_name, contract_no), users!granted_by(username, full_name)')
+    .order('created_at', { ascending: false });
+  if (error) return [];
+  return data.map(c => ({
+    id: c.id,
+    clientId: c.client_id,
+    clientName: c.clients?.full_name,
+    contractNo: c.clients?.contract_no,
+    grantedByUsername: c.users?.username,
+    grantedByName: c.users?.full_name,
+    ctype: c.courtesy_type,
+    category: c.category,
+    amount: parseFloat(c.amount || 0),
+    reason: c.reason,
+    date: c.courtesy_date,
+    createdAt: c.created_at,
+  }));
 }
 
 // ─── COMMISSION RATES ─────────────────────────────────────

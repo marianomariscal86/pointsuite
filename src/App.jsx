@@ -6,7 +6,7 @@ import {
   insertClientEmail, updateClientEmail,
   insertClientAddress, updateClientAddress,
   insertClientComment,
-  fetchPayments, insertPayment,
+  fetchPayments, insertPayment, softDeletePayment,
   fetchReservations, insertReservation, updateReservation,
   fetchUnits, insertUnit, updateUnit,
   fetchUnitTypes, insertUnitType, updateUnitType, deleteUnitType,
@@ -19,6 +19,7 @@ import {
   fetchCommissionRates, upsertCommissionRate,
   fetchSystemConfig, upsertSystemConfig,
   cancelClientContract,
+  insertCourtesy, fetchCourtesies,
 } from './lib/db.js';
 const BG = "#030912", BG2 = "#060d19", BG3 = "#0b1628", BD = "#18263d";
 const T1 = "#e2e8f0", T2 = "#8aa8c0", T3 = "#2e4a66", T4 = "#1e3558", T5 = "#2d4563"; // Corregido: T5 definido aquí
@@ -552,7 +553,9 @@ function CommentsPanel({ selC, cu, onAddComment }) {
     </div>
     {[...(selC.comments || [])].sort((a, b) => (b.id || 0) - (a.id || 0)).map(c => (<div key={c.id || c.date} style={{ background: BG3, borderRadius: 6, padding: "9px 11px", marginBottom: 7, borderLeft: `2px solid ${T4}` }}>
       <div style={{ color: T2, fontSize: 12, marginBottom: 4, lineHeight: 1.5 }}>{c.text || c.body}</div>
-      <div style={{ color: T4, fontSize: 9 }}>{c.by || c.author} · {c.date || (c.created_at ? c.created_at.slice(0, 10) : "")}</div>
+      <div style={{ color: T4, fontSize: 9 }}>
+        {c.authorName || c.by || c.author || "—"} · {c.date || (c.created_at ? c.created_at.slice(0, 10) : "")}
+      </div>
     </div>))}
     {(selC.comments || []).length === 0 && <div style={{ color: T4, fontSize: 11, textAlign: "center", padding: "18px 0" }}>Sin comentarios</div>}
   </div>);
@@ -762,9 +765,15 @@ function FxRateEditor({ fxRate, setFxRate, onSaveFxRate }) {
   </div>);
 }
 
-function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, users, pendingPayments, setPendingPayments, promises, setPromises, fxRate, setFxRate, preselClientId, onClearPresel, onSavePayment, onSavePending, onRejectPending, onSaveFxRate }) {
+function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, users, cr, pendingPayments, setPendingPayments, promises, setPromises, fxRate, setFxRate, preselClientId, onClearPresel, onSavePayment, onSavePending, onRejectPending, onSaveFxRate }) {
   const isCajero = cu.role === "cajero";
   const isGestor = cu.role === "gestor";
+  // Obtener tasa de comisión desde cr (commission_rates de BD)
+  const getCrRate = (concept) => {
+    if (!cr) return 0;
+    const match = cr.find(r => r.id === concept || r.id === concept.replace('point_purchase','point_sale'));
+    return (match?.pct || 0) / 100;
+  };
   const [sid, setSid] = useState(preselClientId || null), [ptype, setPtype] = useState("maintenance"), [mantAmt, setMantAmt] = useState(""), [moraAmt, setMoraAmt] = useState(""), [note, setNote] = useState(""), [ok, setOk] = useState(null);
   const [validateMid, setValidateMid] = useState("1"); // Medio de pago al validar (cajero)
   const [proposalMid, setProposalMid] = useState(""); // Medio de pago al proponer (gestor)
@@ -865,7 +874,7 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
       maintPointExpiry: targetExpiry,
       isPrepago: pp2.isPrepago || targetYear > CY,
       pendingPaymentId: typeof pp2.id === 'number' && pp2.id > 1000000000 ? null : pp2.id,
-      agentCommission: (pp2.isPrepago ? (pp2.mantAmt - pp2.mantDisc) * 0.01 : (pp2.mantAmt - pp2.mantDisc) * 0.02) + (pp2.moraAmt - pp2.moraDisc) * 0.03,
+      agentCommission: (pp2.isPrepago ? (pp2.mantAmt - pp2.mantDisc) * getCrRate('prepago') : (pp2.mantAmt - pp2.mantDisc) * getCrRate('maintenance')) + (pp2.moraAmt - pp2.moraDisc) * getCrRate('moratorios'),
     };
     setPayments(ps => [...ps, payment]);
     // Guardar en Supabase
@@ -915,22 +924,21 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
     setPendingPayments(ps => ps.filter(p => p.id !== id));
     if (onRejectPending) onRejectPending(id).catch(console.error);
   };
-  const deletePayment = pid => {
+  const deletePayment = async pid => {
     const p = payments.find(x => x.id === pid); if (!p) return;
-    // Solo se puede eliminar un pago al día SIGUIENTE de haberlo procesado.
-    // El pago del día de ayer (TOD-1) es el que puede eliminarse hoy.
     const yesterday = new Date(TODAY.getTime() - 86400000).toISOString().split("T")[0];
-    if (p.date !== yesterday) { alert("Solo se pueden eliminar pagos procesados el día anterior. Los pagos del día actual deben esperar hasta mañana; los anteriores ya pasaron la ventana de corrección."); return; }
-    if (!window.confirm(`¿Eliminar pago de ${p.clientName} por ${f$(p.amount)}? Esto revertirá los cambios al cliente.`)) return;
-    // Revertir efectos según tipo
-    setClients(cs => cs.map(c => {
-      if (c.id !== p.clientId) return c;
-      if (p.type === "maintenance") { const np = Math.max(0, c.paidPoints - (p.points || 0)), nb = c.balance + (p.amountMant || p.amount); return { ...c, paidPoints: np, balance: nb, status: nb > 0 ? "Partial" : "Active" }; }
-      if (p.type === "point_purchase") { const np = Math.max(0, c.paidPoints - (p.points || 0)), na = Math.max(0, c.annualPoints - (p.points || 0)); return { ...c, totalPoints: Math.max(0, c.totalPoints - (p.points || 0)), annualPoints: na, paidPoints: np }; }
-      if (p.type === "cancellation_payment") return { ...c, balance: p.amount, contractStatus: "Active", cancelDate: "", cancelReason: "" };
-      return c;
-    }));
-    setPayments(ps => ps.filter(x => x.id !== pid));
+    if (p.date !== yesterday) { alert("Solo se pueden eliminar pagos procesados el día anterior."); return; }
+    if (!window.confirm(`¿Eliminar pago de ${p.clientName} por ${f$(p.amount)}? Esta acción no se puede deshacer.`)) return;
+    try {
+      if (typeof p.id === 'number' && p.id < 1000000000) {
+        await softDeletePayment(p.id);
+      }
+      setPayments(ps => ps.filter(x => x.id !== pid));
+      if (onSavePayment) await loadAll();
+    } catch (e) {
+      console.error('Error eliminando pago:', e);
+      alert('Error eliminando pago: ' + (e.message || JSON.stringify(e)));
+    }
   };
   const emitReceipt = pid => {
     const p = payments.find(x => x.id === pid); if (!p) return;
@@ -2217,11 +2225,18 @@ function UsersView({ cu, users, setUsers, rc, onSaveUser }) {
     </tr>))} />
   </div>);
 }
-function TeamView({ users, setUsers, clients, setClients, payments, reservations, onAssignGestor, onCancelContract }) {
+function TeamView({ users, setUsers, clients, setClients, payments, reservations, onAssignGestor, onCancelContract, onSaveUser }) {
   const [ttab, setTtab] = useState("list"), [modal, setModal] = useState(null), [form, setForm] = useState({}), [agt, setAgt] = useState(""), [selC, setSelC] = useState([]);
   const setF = k => v => setForm(f => ({ ...f, [k]: v }));
   const gestors = users.filter(u => u.role === "gestor");
-  const save = () => { if (modal === "new") setUsers(us => [...us, { ...form, id: Date.now(), role: "gestor", active: true, commissions: { collection: 0 }, salary: +(form.salary || 0) }]); else setUsers(us => us.map(u => u.id === modal.id ? { ...u, ...form, salary: +(form.salary || 0) } : u)); setModal(null); };
+  const save = () => {
+    const isNew = modal === "new";
+    const obj = { ...form, role: "gestor", active: true, salary: +(form.salary || 0), commissions: { collection: 0 } };
+    if (isNew) setUsers(us => [...us, { ...obj, id: Date.now() }]);
+    else setUsers(us => us.map(u => u.id === modal.id ? { ...u, ...obj } : u));
+    if (onSaveUser) onSaveUser(isNew ? obj : { ...obj, id: modal.id });
+    setModal(null);
+  };
   const doAssign = () => {
     if (!agt || !selC.length) return;
     setClients(cs => cs.map(c => selC.includes(c.id) ? { ...c, assignedGestor: agt } : c));
@@ -2341,46 +2356,49 @@ function ContractsView({ clients, setClients }) {
       </tr>))} />
   </div>);
 }
-function CourtesiesView({ clients, setClients, courtesies, setCourtesies, pp, cu }) {
-  const [modal, setModal] = useState(false), [sid, setSid] = useState(null), [ctype, setCtype] = useState("points"), [amt, setAmt] = useState(""), [reason, setReason] = useState(""), [cat, setCat] = useState("Fidelización"), [date, setDate] = useState(new Date().toISOString().split("T")[0]);
-  const cats = ["Fidelización", "Error operativo", "Campaña comercial", "Compensación", "Acuerdo especial", "Otro"];
+function CourtesiesView({ clients, setClients, courtesies, setCourtesies, pp, cu, users, onSaveCourtesy }) {
+  const [modal, setModal] = useState(false), [sid, setSid] = useState(null), [ctype, setCtype] = useState("points"), [amt, setAmt] = useState(""), [reason, setReason] = useState(""), [cat, setCat] = useState("points");
+  const ctypeOpts = [{ v: "points", l: "Puntos gratuitos" }, { v: "balance_reduction", l: "Reducción de saldo" }, { v: "free_reservation", l: "Reservación gratuita" }];
   const client = clients.find(c => c.id === sid);
   const doAdd = () => {
     if (!client || !reason || !amt) return;
-    const c = { id: Date.now(), clientId: client.id, clientName: client.name, contractNo: client.contractNo, date, type: ctype, amount: +amt, reason, category: cat, grantedBy: cu.username };
-    setCourtesies(cs => [...cs, c]);
-    if (ctype === "points") setClients(cs => cs.map(x => x.id === client.id ? { ...x, paidPoints: x.paidPoints + (+amt) } : x));
-    else if (ctype === "balance_reduction") setClients(cs => cs.map(x => x.id === client.id ? { ...x, balance: Math.max(0, x.balance - (+amt)) } : x));
+    const c = { clientId: client.id, clientName: client.name, contractNo: client.contractNo, ctype, category: cat, amount: +amt, reason, grantedByUsername: cu.username };
+    setCourtesies(cs => [...cs, { ...c, id: Date.now(), date: new Date().toISOString().split("T")[0] }]);
+    if (onSaveCourtesy) onSaveCourtesy(c).catch(console.error);
     setModal(false); setSid(null); setAmt(""); setReason("");
+  };
+  const getAuthorName = (c) => {
+    if (c.grantedByName) return c.grantedByName;
+    if (c.grantedByUsername) return c.grantedByUsername;
+    const u = users?.find(u => u.id === c.grantedBy || u.username === c.grantedBy);
+    return u?.name || u?.username || c.grantedBy || "—";
   };
   return (<div>
     {modal && <Modal title="Nueva Cortesía" onClose={() => setModal(false)}>
       <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
         <SearchBox clients={clients.filter(c => c.contractStatus === "Active")} onSelect={setSid} selectedId={sid} />
-        <Inp label="Tipo" value={ctype} onChange={setCtype} opts={[{ v: "points", l: "Puntos gratuitos" }, { v: "balance_reduction", l: "Reducción de saldo" }, { v: "free_reservation", l: "Reservación gratuita" }]} />
+        <Inp label="Tipo" value={ctype} onChange={setCtype} opts={ctypeOpts} />
         <Inp label="Cantidad (pts o $)" value={amt} onChange={setAmt} type="number" />
-        <Inp label="Categoría" value={cat} onChange={setCat} opts={cats} />
+        <Inp label="Categoría" value={cat} onChange={setCat} opts={[{ v: "points", l: "Puntos" }, { v: "balance_reduction", l: "Balance" }, { v: "free_reservation", l: "Reservación" }]} />
         <Inp label="Motivo detallado (obligatorio)" value={reason} onChange={setReason} />
-        <Inp label="Fecha" value={date} onChange={setDate} type="date" />
       </div>
       {!reason && <div style={{ color: Y, fontSize: 10, marginTop: 4 }}>⚠ El motivo es obligatorio.</div>}
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}><Btn label="Cancelar" variant="ghost" onClick={() => setModal(false)} /><Btn label="Registrar Cortesía" variant="purple" disabled={!client || !reason || !amt} onClick={doAdd} /></div>
     </Modal>}
     <div style={{ display: "flex", gap: 9, flexWrap: "wrap", marginBottom: 13 }}>
       <Kpi label="Cortesías Registradas" value={courtesies.length} accent={P} />
-      <Kpi label="Valor Total" value={f$(courtesies.reduce((a, c) => c.type === "balance_reduction" ? a + c.amount : c.type === "points" ? a + c.amount * pp : a + 500, 0))} accent={O} warn={courtesies.length > 0} />
+      <Kpi label="Valor Total" value={f$(courtesies.reduce((a, c) => c.ctype === "balance_reduction" || c.type === "balance_reduction" ? a + c.amount : c.ctype === "points" || c.type === "points" ? a + c.amount * pp : a + 500, 0))} accent={O} warn={courtesies.length > 0} />
     </div>
     <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}><Btn label="+ Nueva Cortesía" variant="purple" onClick={() => setModal(true)} /></div>
-    <Tbl cols={["Fecha", "Contrato", "Cliente", "Tipo", "Cantidad", "Categoría", "Motivo", "Otorgado por"]}
+    <Tbl cols={["Fecha", "Contrato", "Cliente", "Tipo", "Cantidad", "Motivo", "Otorgado por"]}
       rows={[...courtesies].reverse().map(c => (<tr key={c.id} style={{ borderBottom: `1px solid ${BG3}` }}>
-        <td style={tS()}>{c.date}</td>
+        <td style={tS()}>{c.date || c.createdAt?.slice(0, 10)}</td>
         <td style={tBs()}>{c.contractNo}</td>
         <td style={tW()}>{c.clientName}</td>
-        <td style={tPs()}>{c.type}</td>
-        <td style={td({ color: P, fontWeight: 700 })}>{c.type === "points" ? fP(c.amount) : f$(c.amount)}</td>
-        <td style={tYs()}>{c.category}</td>
+        <td style={tPs()}>{ctypeOpts.find(o => o.v === (c.ctype || c.type))?.l || c.ctype || c.type}</td>
+        <td style={td({ color: P, fontWeight: 700 })}>{(c.ctype || c.type) === "points" ? fP(c.amount) : f$(c.amount)}</td>
         <td style={tG3s()}>{c.reason}</td>
-        <td style={tPs()}>{c.grantedBy}</td>
+        <td style={tPs()}>{getAuthorName(c)}</td>
       </tr>))} />
   </div>);
 }
@@ -2625,6 +2643,12 @@ export default function App() {
         if (dbCfg.reservationFee) setRc(dbCfg.reservationFee);
       } catch (e) { console.warn('No se pudo cargar system_config:', e.message); }
 
+      // Cargar cortesías
+      try {
+        const dbCourtesies = await fetchCourtesies();
+        if (dbCourtesies.length > 0) setCourtesies(dbCourtesies);
+      } catch (e) { console.warn('No se pudo cargar cortesías:', e.message); }
+
       // Calcular occ en units desde reservaciones
       const unitsWithOcc = dbUnits.map(u => ({
         ...u,
@@ -2745,16 +2769,18 @@ export default function App() {
     try {
       const dbUser = users.find(u => u.username === cu?.username);
       const userId = dbUser?.id || null;
+      const fxForComm = fxRate?.rate || 17.5;
       await insertReservation({
         client_id: resObj.clientId,
         unit_id: resObj.unitId,
-        season: resObj.seasonId || resObj.season,
+        season: resObj.seasonId || resObj.season || null,
         check_in: resObj.checkIn,
         check_out: resObj.checkOut,
-        nights: resObj.nights,
-        points_used: resObj.pointsUsed,
+        nights: resObj.nights || 0,
+        points_used: resObj.pointsUsed || 0,
         status: resObj.status || 'Confirmed',
         processed_by: userId,
+        reservation_commission_usd: (rc || 0) / fxForComm,
       });
       await loadAll();
     } catch (e) {
@@ -3072,6 +3098,17 @@ export default function App() {
     }
   };
 
+  const saveCourtesy = async (c) => {
+    try {
+      const dbUser = users.find(u => u.username === cu?.username);
+      await insertCourtesy({ ...c, grantedBy: dbUser?.id || null });
+      await loadAll();
+    } catch (e) {
+      console.error('Error guardando cortesía:', e);
+      alert('Error guardando cortesía: ' + (e.message || JSON.stringify(e)));
+    }
+  };
+
   const login = u => { setCu(u); setTab(RT[u.role][0]); };
   const logout = () => { setCu(null); setTab(null); setClients([]); setPayments([]); };
 
@@ -3135,7 +3172,7 @@ export default function App() {
         <div style={{ fontSize: 15, fontWeight: 800, color: T2, marginBottom: 15, letterSpacing: ".03em" }}>{active?.l}</div>
         {tab === "dash" && <Dashboard clients={clients} reservations={reservations} payments={payments} pp={pp} promises={promises} users={users} />}
         {tab === "clients" && <ClientsView clients={clients} setClients={setClients} pp={pp} cu={cu} payments={payments} reservations={reservations} users={users} onGoToCashier={cid => { setPreselClient(cid); setTab("cashier"); }} onGoToRes={cid => { setPreselResClient(cid); setTab("res"); }} onSaveClient={saveClient} onAddPhone={addClientPhone} onSetPhoneActive={setClientPhoneActive} onAddEmail={addClientEmail} onSetEmailActive={setClientEmailActive} onAddAddress={addClientAddress} onSetAddressActive={setClientAddressActive} onAddComment={addClientComment} onSaveSavedPoints={saveSavedPoints} />}
-        {tab === "cashier" && <CashierView clients={clients} payments={payments} setPayments={setPayments} setClients={setClients} pp={pp} pms={pms} cu={cu} users={users} pendingPayments={pendingPayments} setPendingPayments={setPendingPayments} promises={promises} setPromises={setPromises} fxRate={fxRate} setFxRate={setFxRate} preselClientId={preselClient} onClearPresel={() => setPreselClient(null)} onSavePayment={savePayment} onSavePending={savePendingPayment} onRejectPending={rejectPendingPayment} onSaveFxRate={saveFxRate} />}
+        {tab === "cashier" && <CashierView clients={clients} payments={payments} setPayments={setPayments} setClients={setClients} pp={pp} pms={pms} cu={cu} users={users} cr={cr} pendingPayments={pendingPayments} setPendingPayments={setPendingPayments} promises={promises} setPromises={setPromises} fxRate={fxRate} setFxRate={setFxRate} preselClientId={preselClient} onClearPresel={() => setPreselClient(null)} onSavePayment={savePayment} onSavePending={savePendingPayment} onRejectPending={rejectPendingPayment} onSaveFxRate={saveFxRate} />}
         {tab === "res" && <ReservationsView clients={clients} reservations={reservations} setReservations={setReservations} units={units} setUnits={setUnits} uts={uts} cu={cu} rc={rc} payments={payments} preselClientId={preselResClient} onClearPresel={() => setPreselResClient(null)} onSaveReservation={saveReservation} onCancelReservation={cancelReservation} />}
         {tab === "col" && <CollectionsView clients={clients} payments={payments} pp={pp} promises={promises} setPromises={setPromises} cu={cu} fxRate={fxRate} onSavePromise={savePromise} onUpdatePromise={updatePromiseStatus} />}
         {tab === "reports" && <ReportsView clients={clients} reservations={reservations} payments={payments} pp={pp} users={users} role={cu.role} courtesies={courtesies} rc={rc} />}
@@ -3143,9 +3180,9 @@ export default function App() {
         {tab === "pmethods" && <PayMethodsView pms={pms} setPms={setPms} onSavePm={savePaymentMethod} />}
         {tab === "comp" && <CompView users={users} setUsers={setUsers} payments={payments} reservations={reservations} pp={pp} rc={rc} setRc={setRc} cr={cr} setCr={setCr} onSaveUser={saveUser} onSaveCommissionRate={saveCommissionRate} onSaveReservationFee={saveReservationFee} />}
         {tab === "users" && <UsersView cu={cu} users={users} setUsers={setUsers} rc={rc} onSaveUser={saveUser} />}
-        {tab === "team" && <TeamView users={users} setUsers={setUsers} clients={clients} setClients={setClients} payments={payments} reservations={reservations} onAssignGestor={assignGestor} onCancelContract={cancelContract} />}
+        {tab === "team" && <TeamView users={users} setUsers={setUsers} clients={clients} setClients={setClients} payments={payments} reservations={reservations} onAssignGestor={assignGestor} onCancelContract={cancelContract} onSaveUser={saveUser} />}
         {tab === "contracts" && <ContractsView clients={clients} setClients={setClients} />}
-        {tab === "courtesies" && <CourtesiesView clients={clients} setClients={setClients} courtesies={courtesies} setCourtesies={setCourtesies} pp={pp} cu={cu} />}
+        {tab === "courtesies" && <CourtesiesView clients={clients} setClients={setClients} courtesies={courtesies} setCourtesies={setCourtesies} pp={pp} cu={cu} users={users} onSaveCourtesy={saveCourtesy} />}
         {tab === "ec" && <MyAccountView cu={cu} users={users} payments={payments} pms={pms} fxRate={fxRate} cr={cr} />}
         {tab === "ps" && <PointSalesView clients={clients} setClients={setClients} payments={payments} setPayments={setPayments} pp={pp} pms={pms} cu={cu} pendingSales={pendingSales} setPendingSales={setPendingSales} onSavePointSale={savePointSale} />}
       </div>
