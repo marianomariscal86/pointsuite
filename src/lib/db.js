@@ -556,16 +556,6 @@ export async function insertClientComment(clientId, body, authorId) {
   return data;
 }
 
-// ─── RESERVACIONES (cancelar) ─────────────────────────────
-export async function updateReservation(id, fields) {
-  const dbFields = {};
-  if (fields.status !== undefined) dbFields.status = fields.status;
-  if (fields.checkIn !== undefined) dbFields.check_in = fields.checkIn;
-  if (fields.checkOut !== undefined) dbFields.check_out = fields.checkOut;
-  const { error } = await supabase.from('reservations').update(dbFields).eq('id', id);
-  if (error) throw error;
-}
-
 // ─── VENTA DE PUNTOS ──────────────────────────────────────
 export async function insertPointSale(s, submittedById) {
   // Columns: id, client_id, submitted_by, validated_by, sale_type, points_to_add,

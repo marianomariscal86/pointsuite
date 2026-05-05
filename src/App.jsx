@@ -75,17 +75,18 @@ function getPaidPtsByYear(client, payments) {
   return paidByYear;
 }
 
-function getMaintYear(client, payments) {
+function getMaintYear(client, payments, condonations) {
   if (!client || !client.contractDate) return CY;
   const startYear = new Date(client.contractDate).getFullYear();
   const annualPts = client.annualPoints || 0;
   if (annualPts === 0) return CY;
   const paidByYear = getPaidPtsByYear(client, payments);
+  const condYears = (condonations || []).filter(c => c.clientId === client.id).map(c => c.maintYear);
   for (let yr = startYear; yr <= CY; yr++) {
-    if ((paidByYear[yr] || 0) < annualPts) return yr;
+    const covered = (paidByYear[yr] || 0) >= annualPts || condYears.includes(yr);
+    if (!covered) return yr;
   }
-  // Todos los años hasta CY están pagados; verificar si CY+1 ya está pagado (yaPrepagado)
-  if ((paidByYear[CY + 1] || 0) >= annualPts) return CY + 2; // marca "ya prepagado" devolviendo > CY+1
+  if ((paidByYear[CY + 1] || 0) >= annualPts) return CY + 2;
   return CY + 1;
 }
 function getMaintPointExpiry(maintYear) {
@@ -567,11 +568,11 @@ function CommentsPanel({ selC, cu, onAddComment }) {
 }
 
 // ── CLIENTS VIEW ─────────────────────────────────────────────────────────────
-function ClientsView({ clients, setClients, pp, cu, payments, reservations, users, onGoToCashier, onGoToRes, onSaveClient, onAddPhone, onSetPhoneActive, onAddEmail, onSetEmailActive, onAddAddress, onSetAddressActive, onAddComment, onSaveSavedPoints }) {
+function ClientsView({ clients, setClients, pp, cu, payments, reservations, users, condonations, onGoToCashier, onGoToRes, onSaveClient, onAddPhone, onSetPhoneActive, onAddEmail, onSetEmailActive, onAddAddress, onSetAddressActive, onAddComment, onSaveSavedPoints }) {
   const [srch, setSrch] = useState(""), [filt, setFilt] = useState("All"), [sel, setSel] = useState(null), [modal, setModal] = useState(null), [dtab, setDtab] = useState("info");
   const [saveModal, setSaveModal] = useState(null);
   const canEdit = ["superadmin", "admin"].includes(cu.role);
-  const en = useMemo(() => clients.map(c => { const d = dOvr(c.dueDate); const cl = getClientStatus(c, payments); const interest = cInt(c.balance, d, cl.r * 12); return { ...c, dOvr: d, cls: cl, interest, totalOwed: c.balance + interest, ph: (c.phones || []).find(p => p.active !== false)?.number || "—" }; }), [clients, payments]);
+  const en = useMemo(() => clients.map(c => { const d = dOvr(c.dueDate); const cl = getClientStatus(c, payments, condonations); const interest = cInt(c.balance, d, cl.r * 12); return { ...c, dOvr: d, cls: cl, interest, totalOwed: c.balance + interest, ph: (c.phones || []).find(p => p.active !== false)?.number || "—" }; }), [clients, payments, condonations]);
   const filtered = useMemo(() => { const ql = srch.toLowerCase(); return en.filter(c => { const ms = !srch || c.name.toLowerCase().includes(ql) || c.contractNo.toLowerCase().includes(ql) || (c.phones || []).some(p => p.number.includes(srch)) || (c.emails || []).some(e => e.email.toLowerCase().includes(ql)); const mf = filt === "All" || c.status === filt || (filt === "Morosos" && c.balance > 0) || (filt === "Cancelados" && c.contractStatus !== "Active"); return ms && mf; }); }, [en, srch, filt]);
   const selC = en.find(c => c.id === sel);
   const canEditContract = cu && (cu.role === "admin" || cu.role === "superadmin");
@@ -788,11 +789,11 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
   const costPct = selectedPm?.costPct || 0;
   const client = clients.find(c => c.id === sid);
   const d = client ? dOvr(client.dueDate) : 0;
-  const cls = client ? getClientStatus(client, payments) : { l: "Al corriente", c: "#22c55e", r: 0 };
+  const cls = client ? getClientStatus(client, payments, condonations) : { l: "Al corriente", c: "#22c55e", r: 0 };
   const interest = client ? cInt(client.balance, d, cls.r * 12) : 0;
   const mantAmtN = +mantAmt || 0, moraAmtN = +moraAmt || 0;
-  // Año de mantenimiento a pagar para el cliente seleccionado
-  const maintYear = client ? getMaintYear(client, payments) : CY;
+  // Año de mantenimiento a pagar para el cliente seleccionado (considera condonados como cubiertos)
+  const maintYear = client ? getMaintYear(client, payments, condonations) : CY;
   // Es prepago SOLO si el mantenimiento del año en curso está completamente pagado
   // y por lo tanto el siguiente pago corresponde al año siguiente
   // Es prepago SOLO si maintYear es exactamente CY+1 (siguiente año, no más allá).
@@ -865,7 +866,7 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
     const mantPaid = pp2.mantAmt - pp2.mantDisc;
     const ptsFinal = pp2.ptype === "maintenance" ? Math.round(mantPaid / pp) : (pp2.ptype === "point_purchase" ? Math.round(pp2.totalACobrar / pp) : 0);
     // Determinar a qué año se asigna el pago (el más antiguo pendiente, salvo que sea prepago)
-    const targetYear = pp2.isPrepago ? (pp2.maintYear || CY + 1) : (cli ? getMaintYear(cli, payments) : CY);
+    const targetYear = pp2.isPrepago ? (pp2.maintYear || CY + 1) : (cli ? getMaintYear(cli, payments, condonations) : CY);
     const targetExpiry = getMaintPointExpiry(targetYear);
     const payment = {
       id: Date.now(), clientId: pp2.clientId, clientName: pp2.clientName, contractNo: pp2.contractNo,
@@ -1296,7 +1297,7 @@ function ConfDoc({ r, onClose }) {
     </div>
   </Modal>);
 }
-function ResModal({ clients, units, uts, reservations, onSave, onClose, cu, rc, presel, payments }) {
+function ResModal({ clients, units, uts, reservations, onSave, onClose, cu, rc, presel, payments, condonations }) {
   const [sid, setSid] = useState(presel || null), [uid, setUid] = useState(units.filter(u => u.active)[0]?.id || ""), [ci, setCi] = useState(""), [co, setCo] = useState("");
   const unit = units.find(u => u.id === +uid), ut = uts.find(t => t.id === unit?.typeId), client = clients.find(c => c.id === sid), season = detS(ci, unit);
   const nights = ci && co ? Math.max(0, Math.round((new Date(co) - new Date(ci)) / 86400000)) : 0;
@@ -1307,7 +1308,7 @@ function ResModal({ clients, units, uts, reservations, onSave, onClose, cu, rc, 
   const avail = client ? client.paidPoints - usedP + savedA : 0;
   const conflict = (unit?.occ || []).some(o => { const oi = new Date(o.ci), oo = new Date(o.co), ni = new Date(ci), no = new Date(co); return !(no <= oi || ni >= oo); });
   // Morosidad real: hay años de mantenimiento sin pagar hasta el año actual
-  const cls = client ? getClientStatus(client, payments || []) : null;
+  const cls = client ? getClientStatus(client, payments, condonations) : null;
   const delinq = cls ? !["Al corriente", "Promoción Prepago"].includes(cls.l) : false;
   const canBook = nights > 0 && client && ptTotal <= avail && unit && client.contractStatus === "Active" && !delinq && !conflict;
   return (<Modal title="Nueva Reservación" onClose={onClose} wide>
@@ -1336,7 +1337,7 @@ function ResModal({ clients, units, uts, reservations, onSave, onClose, cu, rc, 
     </div>
   </Modal>);
 }
-function ReservationsView({ clients, reservations, setReservations, units, setUnits, uts, cu, rc, payments, preselClientId, onClearPresel, onSaveReservation, onCancelReservation }) {
+function ReservationsView({ clients, reservations, setReservations, units, setUnits, uts, cu, rc, payments, condonations, preselClientId, onClearPresel, onSaveReservation, onCancelReservation }) {
   const [vtab, setVtab] = useState("avail"), [modal, setModal] = useState(preselClientId ? true : false), [confDoc, setConfDoc] = useState(null), [presel, setPresel] = useState(preselClientId || null), [filt, setFilt] = useState("All");
   const availC = useMemo(() => {
     // Clientes con mantenimiento pagado ESTE AÑO y con puntos disponibles sin usar en reservaciones
@@ -1365,7 +1366,7 @@ function ReservationsView({ clients, reservations, setReservations, units, setUn
   };
   const filtered = reservations.filter(r => filt === "All" || r.status === filt || r.clientName === filt);
   return (<div>
-    {modal && <ResModal clients={availC.length ? availC : clients} units={units} uts={uts} reservations={reservations} onSave={save} onClose={() => setModal(false)} cu={cu} rc={rc} presel={presel} payments={payments} />}
+    {modal && <ResModal clients={availC.length ? availC : clients} units={units} uts={uts} reservations={reservations} onSave={save} onClose={() => setModal(false)} cu={cu} rc={rc} presel={presel} payments={payments} condonations={condonations} />}
     {confDoc && <ConfDoc r={confDoc} onClose={() => setConfDoc(null)} />}
     <div style={{ display: "flex", gap: 5, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
       {[["avail", "Puntos Disponibles"], ["list", "Todas las Reservaciones"]].map(([id, l]) => (
@@ -1423,7 +1424,7 @@ function ReservationsView({ clients, reservations, setReservations, units, setUn
   </div>);
 }
 // ── COLLECTIONS ──────────────────────────────────────────────────────────────
-function CollectionsView({ clients, payments, pp, promises, setPromises, cu, fxRate, onSavePromise, onUpdatePromise }) {
+function CollectionsView({ clients, payments, pp, promises, setPromises, cu, fxRate, onSavePromise, onUpdatePromise, condonations }) {
   const [filt, setFilt] = useState("All"), [vtab, setVtab] = useState("accounts"), [pMod, setPMod] = useState(null), [pDate, setPDate] = useState(new Date().toISOString().split("T")[0]), [pAmt, setPAmt] = useState(""), [pNote, setPNote] = useState("");
   const isAdmin = ["superadmin", "admin"].includes(cu.role);
   const myC = isAdmin ? clients : clients.filter(c => c.assignedGestor === cu.username);
@@ -1437,7 +1438,7 @@ function CollectionsView({ clients, payments, pp, promises, setPromises, cu, fxR
   const costM = relP.reduce((a, p) => a + p.amount * (p.costPct || 0) / 100 + (p.agentCommission || 0), 0);
   const revM = relP.reduce((a, p) => a + p.amount, 0);
   const costPct2 = revM > 0 ? ((costM / revM) * 100).toFixed(1) : "0.0";
-  const en = myC.map(c => { const d = dOvr(c.dueDate); const cl = getClientStatus(c, payments); return { ...c, dOvr: d, cls: cl, interest: cInt(c.balance, d, cl.r * 12) }; });
+  const en = myC.map(c => { const d = dOvr(c.dueDate); const cl = getClientStatus(c, payments, condonations); return { ...c, dOvr: d, cls: cl, interest: cInt(c.balance, d, cl.r * 12) }; });
   const fc = en.filter(c => filt === "All" || c.status === filt || (filt === "Morosos" && c.balance > 0));
   // Saldo en USD
   const balUSD = c => c.balance / fx;
@@ -1597,11 +1598,19 @@ function PointSalesView({ clients, setClients, payments, setPayments, pp, pms, c
     setPayments(ps => [...ps, p]);
     setClients(cs => cs.map(c => { if (c.id !== sale.clientId) return c; if (sale.stype === "immediate") { const a2 = c.annualPoints + sale.pts, p2 = c.paidPoints + sale.pts; return { ...c, totalPoints: c.totalPoints + sale.pts, annualPoints: a2, paidPoints: p2, balance: Math.max(0, (a2 - p2) * pp) }; } const nT = c.totalPoints + sale.pts, nCY = (c.contractYears || yr) + sale.eYr, nYR = Math.max(1, nCY - (c.yearsElapsed || 0)); const rA = sale.eAn > 0 ? c.annualPoints + sale.eAn : calcAP(nT, c.pointsUsedToDate || 0, nYR); return { ...c, totalPoints: nT, contractYears: nCY, yearsRemaining: nYR, annualPoints: rA, balance: Math.max(0, (rA - (c.paidPoints || 0)) * pp) }; }));
     setPendingSales(ps => ps.map(s => s.id === id ? { ...s, status: "Validada", validatedBy: cu.username } : s));
-    if (onSavePointSale) onSavePointSale({
-      clientId: sale.clientId, stype: sale.stype, pts: sale.pts,
-      eYr: sale.eYr || 0, eAn: sale.eAn || 0,
-      totalMxn: sale.totalCost, totalUsd: 0,
-    });
+    if (onSavePointSale) {
+      const cli = clients.find(c => c.id === sale.clientId);
+      const nT = cli ? cli.totalPoints + sale.pts : null;
+      const nA = sale.stype === 'immediate' ? (cli ? cli.annualPoints + sale.pts : null) : (sale.eAn > 0 && cli ? cli.annualPoints + sale.eAn : null);
+      const nCY = cli && sale.eYr ? (cli.contractYears || 10) + sale.eYr : null;
+      onSavePointSale({
+        clientId: sale.clientId, stype: sale.stype, pts: sale.pts,
+        eYr: sale.eYr || 0, eAn: sale.eAn || 0,
+        totalMxn: sale.totalCost, totalUsd: 0,
+        newTotalPoints: nT, newAnnualPoints: nA, newContractYears: nCY,
+        note: sale.note,
+      });
+    }
   };
   const cancel = id => setPendingSales(ps => ps.map(s => s.id === id ? { ...s, status: "Cancelada" } : s));
   const actPend = pendingSales.filter(s => s.status === "Pendiente" && new Date(s.expiresAt).getTime() > now);
@@ -1674,7 +1683,7 @@ function PointSalesView({ clients, setClients, payments, setPayments, pp, pms, c
   </div>);
 }
 // ── REPORTS (compact) ────────────────────────────────────────────────────────
-function ReportsView({ clients, reservations, payments, pp, users, role, courtesies, rc }) {
+function ReportsView({ clients, reservations, payments, pp, users, role, courtesies, rc, condonations }) {
   const [rep, setRep] = useState("col");
   const [period, setPeriod] = useState("mtd"); // mtd | ytd | lm | ly
   const tabs = [["col", "Cobranza"], ["mora", "Morosidad"], ["prom", "Promesas Pago"], ["res", "Reservaciones"], ["cgestor", "Costo Gestor"], ["cglobal", "Costo Global"], ["pts", "Puntos"], ["ptsAvail", "Pts Disponibles"], ["cort", "Cortesías"], ...(role === "superadmin" ? [["cto", "Contratos"]] : [])];
@@ -1701,7 +1710,7 @@ function ReportsView({ clients, reservations, payments, pp, users, role, courtes
   const txCost = filteredPayments.reduce((a, p) => a + p.amount * (p.costPct || 0) / 100, 0);
   const commAll = filteredPayments.reduce((a, p) => a + (p.agentCommission || 0), 0) + filteredReservations.filter(r => r.status === "Confirmed").length * rc;
   const salaryAll = staff.reduce((a, u) => a + (u.salary || 0), 0);
-  const en = clients.map(c => { const d = dOvr(c.dueDate); const cl = getClientStatus(c, payments); return { ...c, dOvr: d, cls: cl, interest: cInt(c.balance, d, cl.r * 12) }; });
+  const en = clients.map(c => { const d = dOvr(c.dueDate); const cl = getClientStatus(c, payments, condonations); return { ...c, dOvr: d, cls: cl, interest: cInt(c.balance, d, cl.r * 12) }; });
   const Row = ({ items }) => (<>{items.map(([l, v, c]) => (<div key={l} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", borderBottom: `1px solid ${BG3}` }}><span style={{ color: T4, fontSize: 11 }}>{l}</span><span style={{ color: c || T2, fontWeight: 600, fontSize: 11 }}>{v}</span></div>))}</>);
   return (<div>
     <div style={{ display: "flex", gap: 4, marginBottom: 10, flexWrap: "wrap", alignItems: "center" }}>
@@ -1883,7 +1892,7 @@ function ReportsView({ clients, reservations, payments, pp, users, role, courtes
           </div>
           <Tbl cols={["Contrato", "Cliente", "Pagados", "Usados este año", "Guardados", "Disponibles", "Gestor", "Estado Cuota"]}
             rows={list.map(c => {
-              const d = dOvr(c.dueDate); const cl = getClientStatus(c, payments); return (<tr key={c.id} style={{ borderBottom: `1px solid ${BG3}` }}>
+              const d = dOvr(c.dueDate); const cl = getClientStatus(c, payments, condonations); return (<tr key={c.id} style={{ borderBottom: `1px solid ${BG3}` }}>
                 <td style={tBs()}>{c.contractNo}</td>
                 <td style={tW()}>{c.name}</td>
                 <td style={tG()}>{fP(c.paidPoints)}</td>
@@ -2410,7 +2419,7 @@ function CourtesiesView({ clients, setClients, courtesies, setCourtesies, pp, cu
   </div>);
 }
 // ── DASHBOARD ────────────────────────────────────────────────────────────────
-function Dashboard({ clients, reservations, payments, pp, promises, users }) {
+function Dashboard({ clients, reservations, payments, pp, promises, users, condonations }) {
   const collT = payments.filter(p => p.date === TOD).reduce((a, p) => a + p.amount, 0);
   const collM = payments.filter(p => p.date && p.date.slice(0, 7) === TOM).reduce((a, p) => a + p.amount, 0);
   const promT = promises.filter(p => p.promiseDate === TOD && p.status === "Pendiente");
@@ -2420,7 +2429,7 @@ function Dashboard({ clients, reservations, payments, pp, promises, users }) {
   const commM = mPmts.reduce((a, p) => a + (p.agentCommission || 0), 0);
   const salM = users.filter(u => ["gestor", "cajero", "admin"].includes(u.role)).reduce((a, u) => a + (u.salary || 0), 0);
   const costPct = collM > 0 ? (((txM + commM + salM) / collM) * 100).toFixed(1) : "0.0";
-  const en = clients.map(c => { const d = dOvr(c.dueDate); const cl = getClientStatus(c, payments); return { ...c, d, cls: cl, int: cInt(c.balance, d, cl.r * 12) }; });
+  const en = clients.map(c => { const d = dOvr(c.dueDate); const cl = getClientStatus(c, payments, condonations); return { ...c, d, cls: cl, int: cInt(c.balance, d, cl.r * 12) }; });
   return (<div>
     <div style={{ display: "flex", gap: 9, flexWrap: "wrap", marginBottom: 18 }}>
       <Kpi label="Cobrado Hoy" value={f$(collT)} accent={G} />
@@ -3265,6 +3274,24 @@ export default function App() {
     try {
       const dbUser = users.find(u => u.username === cu?.username);
       await insertPointSale(sale, dbUser?.id || null);
+      // Actualizar cliente en BD: total_points, annual_points, contract_years son campos reales
+      const cli = clients.find(c => c.id === sale.clientId);
+      if (cli) {
+        const clientUpdates = {};
+        if (sale.stype === 'immediate') {
+          clientUpdates.total_points = cli.totalPoints + sale.pts;
+          clientUpdates.annual_points = cli.annualPoints + sale.pts;
+        } else {
+          const nT = cli.totalPoints + sale.pts;
+          const nCY = (cli.contractYears || 10) + (sale.eYr || 0);
+          const nYR = Math.max(1, nCY - (cli.yearsElapsed || 0));
+          const rA = sale.eAn > 0 ? cli.annualPoints + sale.eAn : calcAP(nT, cli.pointsUsedToDate || 0, nYR);
+          clientUpdates.total_points = nT;
+          clientUpdates.contract_years = nCY;
+          clientUpdates.annual_points = rA;
+        }
+        await updateClient(sale.clientId, clientUpdates);
+      }
       await loadAll();
     } catch (e) {
       console.error('Error guardando venta:', e);
@@ -3434,12 +3461,12 @@ export default function App() {
       </div>
       <div style={{ flex: 1, overflowY: "auto", padding: 20 }}>
         <div style={{ fontSize: 15, fontWeight: 800, color: T2, marginBottom: 15, letterSpacing: ".03em" }}>{active?.l}</div>
-        {tab === "dash" && <Dashboard clients={clients} reservations={reservations} payments={payments} pp={pp} promises={promises} users={users} />}
-        {tab === "clients" && <ClientsView clients={clients} setClients={setClients} pp={pp} cu={cu} payments={payments} reservations={reservations} users={users} onGoToCashier={cid => { setPreselClient(cid); setTab("cashier"); }} onGoToRes={cid => { setPreselResClient(cid); setTab("res"); }} onSaveClient={saveClient} onAddPhone={addClientPhone} onSetPhoneActive={setClientPhoneActive} onAddEmail={addClientEmail} onSetEmailActive={setClientEmailActive} onAddAddress={addClientAddress} onSetAddressActive={setClientAddressActive} onAddComment={addClientComment} onSaveSavedPoints={saveSavedPoints} />}
+        {tab === "dash" && <Dashboard clients={clients} reservations={reservations} payments={payments} pp={pp} promises={promises} users={users} condonations={condonations} />}
+        {tab === "clients" && <ClientsView clients={clients} setClients={setClients} pp={pp} cu={cu} payments={payments} reservations={reservations} users={users} condonations={condonations} onGoToCashier={cid => { setPreselClient(cid); setTab("cashier"); }} onGoToRes={cid => { setPreselResClient(cid); setTab("res"); }} onSaveClient={saveClient} onAddPhone={addClientPhone} onSetPhoneActive={setClientPhoneActive} onAddEmail={addClientEmail} onSetEmailActive={setClientEmailActive} onAddAddress={addClientAddress} onSetAddressActive={setClientAddressActive} onAddComment={addClientComment} onSaveSavedPoints={saveSavedPoints} />}
         {tab === "cashier" && <CashierView clients={clients} payments={payments} setPayments={setPayments} setClients={setClients} pp={pp} pms={pms} cu={cu} users={users} cr={cr} condonations={condonations} pendingPayments={pendingPayments} setPendingPayments={setPendingPayments} promises={promises} setPromises={setPromises} fxRate={fxRate} setFxRate={setFxRate} preselClientId={preselClient} onClearPresel={() => setPreselClient(null)} onSavePayment={savePayment} onSavePending={savePendingPayment} onRejectPending={rejectPendingPayment} onSaveFxRate={saveFxRate} />}
-        {tab === "res" && <ReservationsView clients={clients} reservations={reservations} setReservations={setReservations} units={units} setUnits={setUnits} uts={uts} cu={cu} rc={rc} payments={payments} preselClientId={preselResClient} onClearPresel={() => setPreselResClient(null)} onSaveReservation={saveReservation} onCancelReservation={cancelReservation} />}
-        {tab === "col" && <CollectionsView clients={clients} payments={payments} pp={pp} promises={promises} setPromises={setPromises} cu={cu} fxRate={fxRate} onSavePromise={savePromise} onUpdatePromise={updatePromiseStatus} />}
-        {tab === "reports" && <ReportsView clients={clients} reservations={reservations} payments={payments} pp={pp} users={users} role={cu.role} courtesies={courtesies} rc={rc} />}
+        {tab === "res" && <ReservationsView clients={clients} reservations={reservations} setReservations={setReservations} units={units} setUnits={setUnits} uts={uts} cu={cu} rc={rc} payments={payments} condonations={condonations} preselClientId={preselResClient} onClearPresel={() => setPreselResClient(null)} onSaveReservation={saveReservation} onCancelReservation={cancelReservation} />}
+        {tab === "col" && <CollectionsView clients={clients} payments={payments} pp={pp} promises={promises} setPromises={setPromises} cu={cu} fxRate={fxRate} onSavePromise={savePromise} onUpdatePromise={updatePromiseStatus} condonations={condonations} />}
+        {tab === "reports" && <ReportsView clients={clients} reservations={reservations} payments={payments} pp={pp} users={users} role={cu.role} courtesies={courtesies} rc={rc} condonations={condonations} />}
         {tab === "config" && <ConfigView seasonOrder={seasonOrder} setSeasonOrder={setSeasonOrder} uts={uts} setUts={setUts} units={units} setUnits={setUnits} pp={pp} setPp={setPp} onSaveUnit={saveUnit} onSaveUnitType={saveUnitType} onRemoveUnitType={removeUnitType} onSavePricePerPoint={savePricePerPoint} />}
         {tab === "pmethods" && <PayMethodsView pms={pms} setPms={setPms} onSavePm={savePaymentMethod} />}
         {tab === "comp" && <CompView users={users} setUsers={setUsers} payments={payments} reservations={reservations} pp={pp} rc={rc} setRc={setRc} cr={cr} setCr={setCr} onSaveUser={saveUser} onSaveCommissionRate={saveCommissionRate} onSaveReservationFee={saveReservationFee} />}
