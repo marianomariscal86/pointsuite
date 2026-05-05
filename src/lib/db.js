@@ -419,7 +419,7 @@ export async function updatePendingPayment(id, fields) {
 export async function fetchUsers() {
   const { data, error } = await supabase
     .from('users')
-    .select('id, username, password_hash, role, full_name, color_hex, monthly_salary, is_active')
+    .select('id, username, password_hash, role, full_name, color_hex, monthly_salary, social_cost, is_active')
     .eq('is_active', true)
     .order('id');
   if (error) throw error;
@@ -431,6 +431,7 @@ export async function fetchUsers() {
     name: u.full_name,
     color: u.color_hex,
     salary: parseFloat(u.monthly_salary || 0),
+    socialCost: parseFloat(u.social_cost || 0),
     active: u.is_active,
     commissions: { collection: 0.02 },
   }));
@@ -439,6 +440,7 @@ export async function fetchUsers() {
 export async function updateUser(id, fields) {
   const dbFields = {};
   if (fields.salary !== undefined) dbFields.monthly_salary = fields.salary;
+  if (fields.socialCost !== undefined) dbFields.social_cost = fields.socialCost;
   if (fields.name !== undefined) dbFields.full_name = fields.name;
   if (fields.role !== undefined) dbFields.role = fields.role;
   if (fields.color !== undefined) dbFields.color_hex = fields.color;
@@ -462,6 +464,7 @@ export async function insertUser(u) {
       full_name: u.name,
       color_hex: u.color || '#3B82F6',
       monthly_salary: u.salary || 0,
+      social_cost: u.socialCost || 0,
       is_active: u.active !== false,
     }])
     .select().single();

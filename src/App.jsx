@@ -1710,6 +1710,8 @@ function ReportsView({ clients, reservations, payments, pp, users, role, courtes
   const txCost = filteredPayments.reduce((a, p) => a + p.amount * (p.costPct || 0) / 100, 0);
   const commAll = filteredPayments.reduce((a, p) => a + (p.agentCommission || 0), 0) + filteredReservations.filter(r => r.status === "Confirmed").length * rc;
   const salaryAll = staff.reduce((a, u) => a + (u.salary || 0), 0);
+  const socialCostAll = staff.reduce((a, u) => a + (u.socialCost || 0), 0);
+  const totalPayrollAll = salaryAll + socialCostAll;
   const en = clients.map(c => { const d = dOvr(c.dueDate); const cl = getClientStatus(c, payments, condonations); return { ...c, dOvr: d, cls: cl, interest: cInt(c.balance, d, cl.r * 12) }; });
   const Row = ({ items }) => (<>{items.map(([l, v, c]) => (<div key={l} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", borderBottom: `1px solid ${BG3}` }}><span style={{ color: T4, fontSize: 11 }}>{l}</span><span style={{ color: c || T2, fontWeight: 600, fontSize: 11 }}>{v}</span></div>))}</>);
   return (<div>
@@ -1794,6 +1796,8 @@ function ReportsView({ clients, reservations, payments, pp, users, role, courtes
     {rep === "cgestor" && <div>
       <div style={{ display: "flex", gap: 9, flexWrap: "wrap", marginBottom: 14 }}>
         <Kpi label="Sueldos Base" value={f$(salaryAll)} accent={B} />
+        <Kpi label="Costo Social" value={f$(socialCostAll)} accent={O} />
+        <Kpi label="Nómina Total" value={f$(totalPayrollAll)} accent={P} />
         <Kpi label="Comisiones YTD" value={f$(commAll)} accent={G} />
         <Kpi label="Costo Financiero" value={f$(txCost)} accent={Y} />
       </div>
@@ -1817,14 +1821,14 @@ function ReportsView({ clients, reservations, payments, pp, users, role, courtes
         <Kpi label={`Ingresos (${period})`} value={f$(colTotal)} accent={G} />
         <Kpi label="Costo Financiero" value={f$(txCost)} sub={colTotal > 0 ? ((txCost / colTotal) * 100).toFixed(1) + "%" : ""} accent={Y} />
         <Kpi label="Comisiones" value={f$(commAll)} sub={colTotal > 0 ? ((commAll / colTotal) * 100).toFixed(1) + "%" : ""} accent={P} />
-        <Kpi label="Nómina Mensual" value={f$(salaryAll)} sub={colTotal > 0 ? ((salaryAll / colTotal) * 100).toFixed(1) + "%" : ""} accent={B} />
-        <Kpi label="Costo Total" value={f$(txCost + commAll + salaryAll)} sub={colTotal > 0 ? (((txCost + commAll + salaryAll) / colTotal) * 100).toFixed(1) + "% de ingresos" : ""} accent={R} warn />
+        <Kpi label="Nómina Mensual" value={f$(totalPayrollAll)} sub={colTotal > 0 ? ((totalPayrollAll / colTotal) * 100).toFixed(1) + "%" : ""} accent={B} />
+        <Kpi label="Costo Total" value={f$(txCost + commAll + totalPayrollAll)} sub={colTotal > 0 ? (((txCost + commAll + totalPayrollAll) / colTotal) * 100).toFixed(1) + "% de ingresos" : ""} accent={R} warn />
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 13 }}>
         <div style={{ background: BG2, border: `1px solid ${BD}`, borderRadius: 10, padding: 15 }}>
           <Sec t="Composición del Costo (% sobre ingresos)" />
           {(() => {
-            const total = txCost + commAll + salaryAll; return [["Costo financiero (medios)", txCost, Y], ["Comisiones cobros+reservas", commAll, G], ["Nómina base", salaryAll, B]].map(([l, v, c]) => {
+            const total = txCost + commAll + totalPayrollAll; return [["Costo financiero (medios)", txCost, Y], ["Comisiones cobros+reservas", commAll, G], ["Sueldos base", salaryAll, B], ["Costo social", socialCostAll, O]].map(([l, v, c]) => {
               const pctIngr = colTotal > 0 ? (v / colTotal) * 100 : 0; const pctTot = total > 0 ? (v / total) * 100 : 0; return (<div key={l} style={{ padding: "6px 0", borderBottom: `1px solid ${BG3}` }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 3 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}><div style={{ width: 6, height: 6, borderRadius: "50%", background: c }} /><span style={{ color: T3, fontSize: 11 }}>{l}</span></div>
@@ -1838,7 +1842,7 @@ function ReportsView({ clients, reservations, payments, pp, users, role, courtes
               </div>);
             });
           })()}
-          <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", marginTop: 4 }}><span style={{ color: T1, fontWeight: 700 }}>TOTAL</span><div style={{ textAlign: "right" }}><div style={{ color: R, fontWeight: 800, fontSize: 14 }}>{f$(txCost + commAll + salaryAll)}</div>{colTotal > 0 && <div style={{ color: R, fontSize: 10 }}>{(((txCost + commAll + salaryAll) / colTotal) * 100).toFixed(1)}% de ingresos</div>}</div></div>
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", marginTop: 4 }}><span style={{ color: T1, fontWeight: 700 }}>TOTAL</span><div style={{ textAlign: "right" }}><div style={{ color: R, fontWeight: 800, fontSize: 14 }}>{f$(txCost + commAll + totalPayrollAll)}</div>{colTotal > 0 && <div style={{ color: R, fontSize: 10 }}>{(((txCost + commAll + totalPayrollAll) / colTotal) * 100).toFixed(1)}% de ingresos</div>}</div></div>
         </div>
         <div style={{ background: BG2, border: `1px solid ${BD}`, borderRadius: 10, padding: 15 }}>
           <Sec t="Costo por Medio de Pago" />
@@ -2119,10 +2123,11 @@ function CompView({ users, setUsers, payments, reservations, pp, rc, setRc, cr, 
   const staff = users.filter(u => u.role !== "superadmin");
   const save = () => {
     const newSalary = +(form.salary || 0);
-    setUsers(us => us.map(u => u.id === editId ? { ...u, salary: newSalary } : u));
+    const newSocialCost = +(form.socialCost || 0);
+    setUsers(us => us.map(u => u.id === editId ? { ...u, salary: newSalary, socialCost: newSocialCost } : u));
     if (onSaveUser) {
       const userObj = users.find(u => u.id === editId);
-      if (userObj) onSaveUser({ id: editId, salary: newSalary });
+      if (userObj) onSaveUser({ id: editId, salary: newSalary, socialCost: newSocialCost });
     }
     setEditId(null);
   };
@@ -2133,7 +2138,14 @@ function CompView({ users, setUsers, payments, reservations, pp, rc, setRc, cr, 
   };
   return (<div>
     {editId && <Modal title="Editar Compensación" onClose={() => setEditId(null)}>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}><Inp label="Sueldo mensual ($)" value={form.salary || 0} onChange={v => setF("salary")(+v)} type="number" /></div><div style={{ background: P + "12", borderRadius: 6, padding: "7px 9px", marginTop: 8, fontSize: 10, color: T3 }}>Las comisiones por cobro se configuran <b style={{ color: P }}>por concepto</b>, no por persona. Ve a la pestaña "Por Concepto".</div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <Inp label="Sueldo mensual ($)" value={form.salary || 0} onChange={v => setF("salary")(+v)} type="number" />
+        <Inp label="Costo social mensual ($)" value={form.socialCost || 0} onChange={v => setF("socialCost")(+v)} type="number" />
+      </div>
+      {((+form.salary || 0) > 0 || (+form.socialCost || 0) > 0) && <div style={{ background: BG3, borderRadius: 6, padding: "7px 9px", marginTop: 8, fontSize: 10, color: T2 }}>
+        Costo total: <b style={{ color: B }}>{f$((+form.salary || 0) + (+form.socialCost || 0))}/mes</b>
+      </div>}
+      <div style={{ background: P + "12", borderRadius: 6, padding: "7px 9px", marginTop: 8, fontSize: 10, color: T3 }}>Las comisiones por cobro se configuran <b style={{ color: P }}>por concepto</b>, no por persona. Ve a la pestaña "Por Concepto".</div>
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}><Btn label="Cancelar" variant="ghost" onClick={() => setEditId(null)} /><Btn label="Guardar" onClick={save} /></div>
     </Modal>}
     <div style={{ display: "flex", gap: 5, marginBottom: 14 }}>
@@ -2144,20 +2156,20 @@ function CompView({ users, setUsers, payments, reservations, pp, rc, setRc, cr, 
     {ctab === "personal" && <div>
       <div style={{ display: "flex", gap: 9, flexWrap: "wrap", marginBottom: 13 }}>
         <Kpi label="Nómina Base" value={f$(staff.reduce((a, u) => a + (u.salary || 0), 0))} accent={B} />
-        <Kpi label="Comisiones Cobros" value={f$(staff.reduce((a, u) => a + payments.filter(p => p.processedBy === u.username).reduce((b, p) => b + p.amount * (0), 0), 0))} accent={G} />
-        <Kpi label="Comisiones Reservas" value={f$(reservations.filter(r => r.status === "Confirmed").length * rc)} accent={P} />
+        <Kpi label="Costo Social Total" value={f$(staff.reduce((a, u) => a + (u.socialCost || 0), 0))} accent={O} />
+        <Kpi label="Costo Total Nómina" value={f$(staff.reduce((a, u) => a + (u.salary || 0) + (u.socialCost || 0), 0))} accent={P} />
       </div>
-      <Tbl cols={["Empleado", "Rol", "Sueldo", "% Cobro", "Comm Cobros", "Comm Res", "Total Est.", ""]}
+      <Tbl cols={["Empleado", "Rol", "Sueldo", "Costo Social", "Costo Total", ""]}
         rows={staff.map(u => {
-          const cP = payments.filter(p => p.processedBy === u.username).reduce((a, p) => a + p.amount * (0), 0); const cR = reservations.filter(r => r.processedBy === u.username && r.status === "Confirmed").length * rc; const tot = (u.salary || 0) + cP + cR; return (<tr key={u.id} style={{ borderBottom: `1px solid ${BG3}` }}>
+          const totalCosto = (u.salary || 0) + (u.socialCost || 0);
+          const pctSocial = u.salary > 0 ? ((u.socialCost || 0) / u.salary * 100).toFixed(1) : "0.0";
+          return (<tr key={u.id} style={{ borderBottom: `1px solid ${BG3}` }}>
             <td style={td()}><div style={{ display: "flex", alignItems: "center", gap: 6 }}><div style={{ width: 18, height: 18, borderRadius: 5, background: u.color + "20", border: `1px solid ${u.color}33`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: u.color, fontWeight: 700 }}>{u.name[0]}</div><span style={{ color: T1, fontWeight: 600, fontSize: 11 }}>{u.name}</span></div></td>
             <td style={td()}><RBdg r={u.role} /></td>
             <td style={td({ color: B })}>{f$(u.salary || 0)}</td>
-            <td style={tG()}>{((0) * 100).toFixed(1)}%</td>
-            <td style={tG()}>{f$(cP)}</td>
-            <td style={tP()}>{f$(cR)}</td>
-            <td style={td({ color: T1, fontWeight: 700, fontSize: 13 })}>{f$(tot)}</td>
-            <td style={td()}><Btn label="Editar" variant="ghost" small onClick={() => { setForm({ salary: u.salary || 0 }); setEditId(u.id); }} /></td>
+            <td style={td({ color: O })}>{f$(u.socialCost || 0)}<span style={{ color: T4, fontSize: 9, marginLeft: 4 }}>({pctSocial}%)</span></td>
+            <td style={td({ color: T1, fontWeight: 700, fontSize: 13 })}>{f$(totalCosto)}</td>
+            <td style={td()}><Btn label="Editar" variant="ghost" small onClick={() => { setForm({ salary: u.salary || 0, socialCost: u.socialCost || 0 }); setEditId(u.id); }} /></td>
           </tr>);
         })} />
     </div>}
@@ -2222,17 +2234,23 @@ function UsersView({ cu, users, setUsers, rc, onSaveUser }) {
         <Inp label="Rol" value={form.role || "gestor"} onChange={setF("role")} opts={Object.keys(RM).map(r => ({ v: r, l: RM[r].l }))} />
         <Inp label="Color (hex)" value={form.color || P} onChange={setF("color")} />
         <Inp label="Sueldo mensual ($)" value={form.salary || 0} onChange={v => setF("salary")(+v)} type="number" />
+        <Inp label="Costo social mensual ($)" value={form.socialCost || 0} onChange={v => setF("socialCost")(+v)} type="number" />
       </div>
-      <div style={{ background: BG3, borderRadius: 6, padding: "7px 9px", marginTop: 9, fontSize: 10, color: T4 }}><b style={{ color: T1 }}>Permisos: </b>{pD[form.role || "gestor"]}</div>
-      <div style={{ background: P + "12", borderRadius: 6, padding: "7px 9px", marginTop: 6, fontSize: 10, color: T3 }}>Las comisiones se configuran <b style={{ color: P }}>por concepto</b> de cobro (Sueldos → Por Concepto).</div>
+      {(form.salary > 0 || form.socialCost > 0) && <div style={{ background: BG3, borderRadius: 6, padding: "8px 10px", marginTop: 8, fontSize: 10, color: T2 }}>
+        Costo total para la empresa: <b style={{ color: B }}>{f$((+form.salary || 0) + (+form.socialCost || 0))}/mes</b>
+        {form.salary > 0 && <span style={{ color: T4, marginLeft: 6 }}>({(((+form.socialCost || 0) / (+form.salary || 1)) * 100).toFixed(1)}% costo social)</span>}
+      </div>}
+      <div style={{ background: BG3, borderRadius: 6, padding: "7px 9px", marginTop: 6, fontSize: 10, color: T4 }}><b style={{ color: T1 }}>Permisos: </b>{pD[form.role || "gestor"]}</div>
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}><Btn label="Cancelar" variant="ghost" onClick={() => setModal(null)} /><Btn label="Guardar" onClick={save} /></div>
     </Modal>}
-    <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}><Btn label="+ Nuevo Usuario" onClick={() => { setForm({ username: "", password: "", name: "", role: "gestor", color: P, salary: 0 }); setModal("new"); }} /></div>
-    <Tbl cols={["Usuario", "Nombre", "Rol", "Sueldo", "Activo", ""]} rows={users.map(u => (<tr key={u.id} style={{ borderBottom: `1px solid ${BG3}`, opacity: u.active === false ? .4 : 1 }}>
+    <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}><Btn label="+ Nuevo Usuario" onClick={() => { setForm({ username: "", password: "", name: "", role: "gestor", color: P, salary: 0, socialCost: 0 }); setModal("new"); }} /></div>
+    <Tbl cols={["Usuario", "Nombre", "Rol", "Sueldo", "Costo Social", "Costo Total", "Activo", ""]} rows={users.map(u => (<tr key={u.id} style={{ borderBottom: `1px solid ${BG3}`, opacity: u.active === false ? .4 : 1 }}>
       <td style={td()}><div style={{ display: "flex", alignItems: "center", gap: 6 }}><div style={{ width: 20, height: 20, borderRadius: 5, background: u.color + "20", border: `1px solid ${u.color}33`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: u.color, fontWeight: 700 }}>{u.username[0].toUpperCase()}</div><span style={{ color: T1, fontWeight: 600 }}>{u.username}</span>{u.id === cu.id && <span style={{ fontSize: 8, color: T4, border: `1px solid ${BD}`, borderRadius: 4, padding: "1px 4px" }}>tú</span>}</div></td>
       <td style={tG3()}>{u.name}</td>
       <td style={td()}><RBdg r={u.role} /></td>
       <td style={tT2()}>{f$(u.salary || 0)}</td>
+      <td style={td({ color: O })}>{f$(u.socialCost || 0)}</td>
+      <td style={td({ color: B, fontWeight: 700 })}>{f$((u.salary || 0) + (u.socialCost || 0))}</td>
       <td style={td()}><Bdg l={u.active === false ? "Cancelado" : "Active"} /></td>
       <td style={tFl()}><Btn label="Editar" variant="ghost" small onClick={() => { setForm({ ...u }); setModal(u); }} />{u.id !== cu.id && <Btn label={u.active === false ? "Activar" : "Baja"} variant={u.active === false ? "success" : "danger"} small onClick={() => {
         setUsers(us => us.map(x => x.id === u.id ? { ...x, active: !x.active } : x));
@@ -2270,7 +2288,7 @@ function TeamView({ users, setUsers, clients, setClients, payments, reservations
           <Inp label="Rol" value={form.role || "gestor"} onChange={setF("role")} opts={[{ v: "gestor", l: "Gestor" }, { v: "cajero", l: "Cajero" }, { v: "admin", l: "Admin" }]} />
         </div>}
         <Inp label="Sueldo mensual ($)" value={form.salary || 0} onChange={v => setF("salary")(+v)} type="number" />
-        <Inp label="Color" value={form.color || P} onChange={setF("color")} />
+        <Inp label="Costo social mensual ($)" value={form.socialCost || 0} onChange={v => setF("socialCost")(+v)} type="number" />
       </div>
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}>
         <Btn label="Cancelar" variant="ghost" onClick={() => setModal(null)} />
@@ -2499,6 +2517,7 @@ function Dashboard({ clients, reservations, payments, pp, promises, users, condo
 function MyAccountView({ cu, users, payments, pms, fxRate, cr }) {
   const userRecord = users.find(u => u.username === cu.username) || cu;
   const sueldo = userRecord.salary || 0;
+  const costoSocial = userRecord.socialCost || 0;
   // Filtrar pagos del mes actual del gestor
   const TOD2 = new Date();
   const monthStart = new Date(TOD2.getFullYear(), TOD2.getMonth(), 1);
@@ -2531,28 +2550,33 @@ function MyAccountView({ cu, users, payments, pms, fxRate, cr }) {
     return a + (p.amount || 0) * pct;
   }, 0);
   // Costo total para la empresa
-  const costoTotal = sueldo + comisiones + costosFin;
+  const costoTotal = sueldo + costoSocial + comisiones + costosFin;
   const pctCosto = cobradoMxn > 0 ? (costoTotal / cobradoMxn) * 100 : 0;
   return (<div style={{ padding: 20, color: T1 }}>
     <h2 style={{ color: B, fontWeight: 700, marginBottom: 20 }}>Mi Estado de Cuenta — {userRecord.name || cu.username}</h2>
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 20 }}>
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 12, marginBottom: 20 }}>
       <div style={{ background: BG2, border: `1px solid ${BD}`, borderRadius: 8, padding: 14 }}>
         <div style={{ fontSize: 9, color: T4, textTransform: "uppercase", marginBottom: 4 }}>Sueldo Mensual</div>
-        <div style={{ color: T1, fontWeight: 700, fontSize: 20 }}>{fMXN(sueldo)}</div>
+        <div style={{ color: T1, fontWeight: 700, fontSize: 18 }}>{fMXN(sueldo)}</div>
+      </div>
+      <div style={{ background: BG2, border: `1px solid ${BD}`, borderRadius: 8, padding: 14 }}>
+        <div style={{ fontSize: 9, color: T4, textTransform: "uppercase", marginBottom: 4 }}>Costo Social</div>
+        <div style={{ color: O, fontWeight: 700, fontSize: 18 }}>{fMXN(costoSocial)}</div>
+        {sueldo > 0 && <div style={{ fontSize: 9, color: T4, marginTop: 3 }}>{((costoSocial / sueldo) * 100).toFixed(1)}% del sueldo</div>}
       </div>
       <div style={{ background: BG2, border: `1px solid ${BD}`, borderRadius: 8, padding: 14 }}>
         <div style={{ fontSize: 9, color: T4, textTransform: "uppercase", marginBottom: 4 }}>Comisiones del Mes</div>
-        <div style={{ color: G, fontWeight: 700, fontSize: 20 }}>{fMXN(comisiones)}</div>
-        <div style={{ fontSize: 9, color: T4, marginTop: 3 }}>1% prepago · 2% mant · 3% mora</div>
+        <div style={{ color: G, fontWeight: 700, fontSize: 18 }}>{fMXN(comisiones)}</div>
+        <div style={{ fontSize: 9, color: T4, marginTop: 3 }}>por concepto cobrado</div>
       </div>
       <div style={{ background: BG2, border: `1px solid ${BD}`, borderRadius: 8, padding: 14 }}>
         <div style={{ fontSize: 9, color: T4, textTransform: "uppercase", marginBottom: 4 }}>Costos Financieros</div>
-        <div style={{ color: O, fontWeight: 700, fontSize: 20 }}>{fMXN(costosFin)}</div>
-        <div style={{ fontSize: 9, color: T4, marginTop: 3 }}>De medios usados en el mes</div>
+        <div style={{ color: Y, fontWeight: 700, fontSize: 18 }}>{fMXN(costosFin)}</div>
+        <div style={{ fontSize: 9, color: T4, marginTop: 3 }}>medios usados en el mes</div>
       </div>
       <div style={{ background: BG2, border: `1px solid ${B}33`, borderRadius: 8, padding: 14 }}>
         <div style={{ fontSize: 9, color: T4, textTransform: "uppercase", marginBottom: 4 }}>Cobrado en el Mes</div>
-        <div style={{ color: B, fontWeight: 700, fontSize: 20 }}>{fMXN(cobradoMxn)}</div>
+        <div style={{ color: B, fontWeight: 700, fontSize: 18 }}>{fMXN(cobradoMxn)}</div>
         <div style={{ fontSize: 9, color: T4, marginTop: 3 }}>{myPayments.length} pagos validados</div>
       </div>
     </div>
@@ -2565,6 +2589,7 @@ function MyAccountView({ cu, users, payments, pms, fxRate, cr }) {
         <div>
           <div style={{ fontSize: 9, color: T4, marginBottom: 3 }}>Detalle del costo:</div>
           <div style={{ fontSize: 11, color: T2 }}>Sueldo: <b>{fMXN(sueldo)}</b></div>
+          <div style={{ fontSize: 11, color: T2 }}>+ Costo social: <b style={{ color: O }}>{fMXN(costoSocial)}</b></div>
           <div style={{ fontSize: 11, color: T2 }}>+ Comisiones: <b>{fMXN(comisiones)}</b></div>
           <div style={{ fontSize: 11, color: T2 }}>+ Costos financieros: <b>{fMXN(costosFin)}</b></div>
           <div style={{ fontSize: 11, color: B, fontWeight: 700, marginTop: 5 }}>= Total: {fMXN(costoTotal)}</div>
