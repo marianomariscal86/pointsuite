@@ -727,3 +727,39 @@ export async function cancelClientContract(clientId, reason, type) {
     .eq('id', clientId);
   if (error) throw error;
 }
+
+// ─── CONDONACIONES ────────────────────────────────────────
+export async function fetchCondonations() {
+  const { data, error } = await supabase
+    .from('condonations')
+    .select('*, clients(full_name, contract_no), users!authorized_by(username, full_name)')
+    .order('created_at', { ascending: false });
+  if (error) return [];
+  return data.map(c => ({
+    id: c.id,
+    clientId: c.client_id,
+    clientName: c.clients?.full_name,
+    contractNo: c.clients?.contract_no,
+    maintYear: c.maint_year,
+    reason: c.reason,
+    authorizedByUsername: c.users?.username,
+    authorizedByName: c.users?.full_name,
+    date: c.condonation_date,
+    createdAt: c.created_at,
+  }));
+}
+
+export async function insertCondonation(clientId, maintYear, reason, authorizedById) {
+  const { data, error } = await supabase
+    .from('condonations')
+    .insert([{
+      client_id: clientId,
+      maint_year: maintYear,
+      reason: reason || '',
+      authorized_by: authorizedById,
+      condonation_date: new Date().toISOString().split('T')[0],
+    }])
+    .select().single();
+  if (error) throw error;
+  return data;
+}

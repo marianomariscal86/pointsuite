@@ -20,6 +20,7 @@ import {
   fetchSystemConfig, upsertSystemConfig,
   cancelClientContract,
   insertCourtesy, fetchCourtesies,
+  fetchCondonations, insertCondonation,
 } from './lib/db.js';
 const BG = "#030912", BG2 = "#060d19", BG3 = "#0b1628", BD = "#18263d";
 const T1 = "#e2e8f0", T2 = "#8aa8c0", T3 = "#2e4a66", T4 = "#1e3558", T5 = "#2d4563"; // Corregido: T5 definido aquí
@@ -90,18 +91,20 @@ function getMaintYear(client, payments) {
 function getMaintPointExpiry(maintYear) {
   return new Date(maintYear, 11, 31).toISOString().split("T")[0];
 }
-function getMaintDesglose(client, payments, pp) {
+function getMaintDesglose(client, payments, pp, condonations) {
   if (!client || !client.contractDate) return [];
   const startYear = new Date(client.contractDate).getFullYear();
   const annualPts = client.annualPoints || 0;
   const montoAnual = Math.round(annualPts * pp);
   const paidByYear = getPaidPtsByYear(client, payments);
+  const condYears = (condonations || []).filter(c => c.clientId === client.id).map(c => c.maintYear);
   const years = [];
   for (let yr = startYear; yr <= CY; yr++) {
     const ptsPagados = paidByYear[yr] || 0;
     const paid = ptsPagados >= annualPts;
     const partial = ptsPagados > 0 && !paid;
-    years.push({ year: yr, pts: annualPts, montoMXN: montoAnual, ptsPagados, paid, partial, pendientePts: Math.max(0, annualPts - ptsPagados), pendienteMXN: Math.max(0, montoAnual - Math.round(ptsPagados * pp)) });
+    const condonated = !paid && condYears.includes(yr);
+    years.push({ year: yr, pts: annualPts, montoMXN: montoAnual, ptsPagados, paid, partial, condonated, pendientePts: condonated ? 0 : Math.max(0, annualPts - ptsPagados), pendienteMXN: condonated ? 0 : Math.max(0, montoAnual - Math.round(ptsPagados * pp)) });
   }
   return years;
 }
@@ -112,14 +115,16 @@ function daysToPointExpiry() { const exp = new Date(CY, 11, 31); if (TODAY > exp
 function daysToMaintDeadline() { const d = new Date(CY, 0, 31); if (TODAY > d) d.setFullYear(CY + 1); return Math.floor((d - TODAY) / 86400000); }
 function cDelEx(bal, dOvrDays) { if (bal === 0) { if (daysToNextRenewal() < 365) return { l: "Promoción Prepago", c: "#10b981", r: 0 }; return { l: "Al corriente", c: G, r: 0 }; } return cDel(dOvrDays); }
 
-function getClientStatus(client, payments) {
+function getClientStatus(client, payments, condonations) {
   if (!client || !client.contractDate) return cDelEx(client?.balance || 0, 0);
   const startYear = new Date(client.contractDate).getFullYear();
   const annualPts = client.annualPoints || 0;
   const paidByYear = getPaidPtsByYear(client, payments);
+  const condYears = (condonations || []).filter(c => c.clientId === client.id).map(c => c.maintYear);
   let oldestUnpaidYear = null;
   for (let yr = startYear; yr <= CY; yr++) {
-    if ((paidByYear[yr] || 0) < annualPts) { oldestUnpaidYear = yr; break; }
+    const covered = (paidByYear[yr] || 0) >= annualPts || condYears.includes(yr);
+    if (!covered) { oldestUnpaidYear = yr; break; }
   }
   if (oldestUnpaidYear !== null) {
     const yearStart = new Date(oldestUnpaidYear, 0, 1);
@@ -142,8 +147,8 @@ const mkE = (label, email, active = true) => ({ label, email, active });
 const mkA = (label, text, active = true) => ({ label, text, active });
 const mkC = (text, by, date) => ({ id: Math.random(), text, by, date });
 const RM = { superadmin: { l: "Super Admin", c: B }, admin: { l: "Admin", c: Y }, cajero: { l: "Cajero", c: G }, gestor: { l: "Gestor", c: P } };
-const RT = { superadmin: ["dash", "clients", "cashier", "res", "col", "reports", "config", "pmethods", "comp", "users"], admin: ["dash", "clients", "reports", "config", "team", "contracts", "courtesies", "ps"], cajero: ["cashier", "clients", "ps"], gestor: ["res", "col", "cashier", "clients", "ec", "ps"] };
-const ATABS = [{ id: "dash", l: "Dashboard", i: "◈" }, { id: "clients", l: "Clientes", i: "◉" }, { id: "cashier", l: "Caja", i: "◐" }, { id: "res", l: "Reservaciones", i: "◫" }, { id: "col", l: "Cobranzas", i: "◎" }, { id: "reports", l: "Reportes", i: "◧" }, { id: "config", l: "Config", i: "◬" }, { id: "pmethods", l: "Medios de Pago", i: "◆" }, { id: "comp", l: "Sueldos", i: "◇" }, { id: "users", l: "Usuarios", i: "◭" }, { id: "team", l: "Mi Equipo", i: "◩" }, { id: "contracts", l: "Contratos", i: "◪" }, { id: "courtesies", l: "Cortesías", i: "◤" }, { id: "ec", l: "Mi Estado de Cuenta", i: "◊" }, { id: "ps", l: "Venta Puntos", i: "◥" }];
+const RT = { superadmin: ["dash", "clients", "cashier", "res", "col", "reports", "config", "pmethods", "comp", "users", "special"], admin: ["dash", "clients", "reports", "config", "team", "contracts", "courtesies", "ps", "special"], cajero: ["cashier", "clients", "ps"], gestor: ["res", "col", "cashier", "clients", "ec", "ps"] };
+const ATABS = [{ id: "dash", l: "Dashboard", i: "◈" }, { id: "clients", l: "Clientes", i: "◉" }, { id: "cashier", l: "Caja", i: "◐" }, { id: "res", l: "Reservaciones", i: "◫" }, { id: "col", l: "Cobranzas", i: "◎" }, { id: "reports", l: "Reportes", i: "◧" }, { id: "config", l: "Config", i: "◬" }, { id: "pmethods", l: "Medios de Pago", i: "◆" }, { id: "comp", l: "Sueldos", i: "◇" }, { id: "users", l: "Usuarios", i: "◭" }, { id: "team", l: "Mi Equipo", i: "◩" }, { id: "contracts", l: "Contratos", i: "◪" }, { id: "courtesies", l: "Cortesías", i: "◤" }, { id: "ec", l: "Mi Estado de Cuenta", i: "◊" }, { id: "special", l: "Gestión Especial", i: "◈" }, { id: "ps", l: "Venta Puntos", i: "◥" }];
 const INIT_U = [
   { id: 1, username: "superadmin", password: "admin", role: "superadmin", name: "Super Administrador", color: B, salary: 0, commissions: { collection: 0 }, active: true },
   { id: 2, username: "admin1", password: "admin", role: "admin", name: "Carmen Ríos", color: Y, salary: 5000, commissions: { collection: 0.015 }, active: true },
@@ -765,7 +770,7 @@ function FxRateEditor({ fxRate, setFxRate, onSaveFxRate }) {
   </div>);
 }
 
-function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, users, cr, pendingPayments, setPendingPayments, promises, setPromises, fxRate, setFxRate, preselClientId, onClearPresel, onSavePayment, onSavePending, onRejectPending, onSaveFxRate }) {
+function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, users, cr, condonations, pendingPayments, setPendingPayments, promises, setPromises, fxRate, setFxRate, preselClientId, onClearPresel, onSavePayment, onSavePending, onRejectPending, onSaveFxRate }) {
   const isCajero = cu.role === "cajero";
   const isGestor = cu.role === "gestor";
   // Obtener tasa de comisión desde cr (commission_rates de BD)
@@ -1078,33 +1083,35 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
 
         {/* Formulario normal para otros conceptos */}
         {ptype !== "prepago_maintenance" && (() => {
-          const desglose = getMaintDesglose(client, payments, pp);
-          const pendientes = desglose.filter(d => !d.paid);
+          const desglose = getMaintDesglose(client, payments, pp, condonations);
+          const pendientes = desglose.filter(d => !d.paid && !d.condonated);
           const fx2 = fxRate?.rate || 17.5;
           return <>
-            {/* Desglose de mantenimientos pendientes — solo si hay más de uno o hay años anteriores sin pagar */}
-            {client && pendientes.length > 0 && <div style={{ background: BG3, border: `1px solid ${pendientes.length > 1 ? R : Y}33`, borderRadius: 8, padding: "10px 12px" }}>
+            {client && (pendientes.length > 0 || desglose.some(d => d.condonated)) && <div style={{ background: BG3, border: `1px solid ${pendientes.length > 1 ? R : Y}33`, borderRadius: 8, padding: "10px 12px" }}>
               <div style={{ fontSize: 9, color: pendientes.length > 1 ? R : Y, textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 8, fontWeight: 700 }}>
-                {pendientes.length > 1 ? `⚠ ${pendientes.length} años de mantenimiento pendientes` : "📅 Mantenimiento pendiente"}
+                {pendientes.length > 1 ? `⚠ ${pendientes.length} años de mantenimiento pendientes` : pendientes.length === 1 ? "📅 Mantenimiento pendiente" : "✓ Desglose de mantenimientos"}
               </div>
               {desglose.map(d => (
-                <div key={d.year} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", borderBottom: `1px solid ${BD}`, opacity: d.paid ? 0.4 : 1 }}>
+                <div key={d.year} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", borderBottom: `1px solid ${BD}`, opacity: (d.paid || d.condonated) ? 0.5 : 1 }}>
                   <div style={{ width: 42, flexShrink: 0 }}>
-                    <span style={{ background: d.paid ? G + "20" : d.partial ? Y + "20" : R + "20", color: d.paid ? G : d.partial ? Y : R, border: `1px solid ${d.paid ? G : d.partial ? Y : R}44`, borderRadius: 4, padding: "1px 5px", fontSize: 9, fontWeight: 700 }}>
+                    <span style={{ background: d.paid ? G + "20" : d.condonated ? P + "20" : d.partial ? Y + "20" : R + "20", color: d.paid ? G : d.condonated ? P : d.partial ? Y : R, border: `1px solid ${d.paid ? G : d.condonated ? P : d.partial ? Y : R}44`, borderRadius: 4, padding: "1px 5px", fontSize: 9, fontWeight: 700 }}>
                       {d.year}
                     </span>
                   </div>
                   <div style={{ flex: 1, fontSize: 10 }}>
                     <span style={{ color: T3 }}>{fP(d.pts)}</span>
                     {d.partial && <span style={{ color: Y, fontSize: 9, marginLeft: 6 }}>Parcial: {fP(d.ptsPagados)} pagados</span>}
+                    {d.condonated && <span style={{ color: P, fontSize: 9, marginLeft: 6 }}>⚖ Condonado</span>}
                   </div>
                   <div style={{ textAlign: "right" }}>
                     {d.paid
                       ? <span style={{ color: G, fontSize: 10, fontWeight: 700 }}>✓ Pagado</span>
-                      : <div>
-                          <div style={{ color: d.partial ? Y : R, fontWeight: 700, fontSize: 10 }}>{fMXN(d.pendienteMXN)}</div>
-                          <div style={{ color: T4, fontSize: 8 }}>{fUSD(d.pendienteMXN / fx2)}</div>
-                        </div>
+                      : d.condonated
+                        ? <span style={{ color: P, fontSize: 10, fontWeight: 700 }}>⚖ Condonado</span>
+                        : <div>
+                            <div style={{ color: d.partial ? Y : R, fontWeight: 700, fontSize: 10 }}>{fMXN(d.pendienteMXN)}</div>
+                            <div style={{ color: T4, fontSize: 8 }}>{fUSD(d.pendienteMXN / fx2)}</div>
+                          </div>
                     }
                   </div>
                 </div>
@@ -2568,6 +2575,233 @@ function MyAccountView({ cu, users, payments, pms, fxRate, cr }) {
     </div>
   </div>);
 }
+
+// ── GESTIÓN ESPECIAL — Condonaciones y Recuperación de Puntos ─────────────────
+function SpecialMgmtView({ clients, payments, condonations, setCondonations, cu, users, pp, onSaveCondonation, onSaveRecoveredPoints }) {
+  const [stab, setStab] = useState("cond");
+  const [selC, setSelC] = useState(null);
+  const [selYear, setSelYear] = useState(null);
+  const [reason, setReason] = useState("");
+  const [confirming, setConfirming] = useState(false);
+  const [recSelC, setRecSelC] = useState(null);
+  const [recSelYear, setRecSelYear] = useState(null);
+  const [recReason, setRecReason] = useState("");
+  const [recConfirming, setRecConfirming] = useState(false);
+
+  const client = clients.find(c => c.id === selC);
+  const recClient = clients.find(c => c.id === recSelC);
+
+  // Años condonados para el cliente seleccionado
+  const condYears = condonations
+    .filter(c => c.clientId === selC)
+    .map(c => c.maintYear);
+
+  // Años disponibles para condonar: vencidos (< CY), con mantenimiento impago, no condonados antes
+  const getCondonableYears = (cli) => {
+    if (!cli || !cli.contractDate) return [];
+    const startYear = new Date(cli.contractDate).getFullYear();
+    const paidByYear = getPaidPtsByYear(cli, payments);
+    const alreadyCond = condonations.filter(c => c.clientId === cli.id).map(c => c.maintYear);
+    const years = [];
+    for (let yr = startYear; yr < CY; yr++) {
+      const paid = (paidByYear[yr] || 0) >= (cli.annualPoints || 0);
+      const condonated = alreadyCond.includes(yr);
+      if (!paid && !condonated) years.push(yr);
+    }
+    return years;
+  };
+
+  // Años disponibles para recuperar puntos:
+  // - Solo CY-1 y CY-2 (últimos 2 años)
+  // - Solo si el mantenimiento fue PAGADO (puntos se distribuyeron)
+  // - Solo si los puntos ya vencieron (siempre, porque son años < CY)
+  // - Solo si esos puntos NO están ya en client_saved_points vigentes
+  const getRecoverableYears = (cli) => {
+    if (!cli || !cli.contractDate) return [];
+    const startYear = new Date(cli.contractDate).getFullYear();
+    const paidByYear = getPaidPtsByYear(cli, payments);
+    const annualPts = cli.annualPoints || 0;
+    const now = new Date();
+    const validSaved = (cli.savedPoints || []).filter(sp => new Date(sp.expiryDate) > now);
+    const years = [];
+    for (let yr = CY - 2; yr < CY; yr++) {
+      if (yr < startYear) continue;
+      const paid = (paidByYear[yr] || 0) >= annualPts;
+      // Verificar si ya existen puntos recuperados de ese año en savedPoints vigentes
+      const alreadyRecovered = validSaved.some(sp => sp.maintYear === yr);
+      if (paid && !alreadyRecovered) years.push(yr);
+    }
+    return years;
+  };
+
+  const condonableYears = client ? getCondonableYears(client) : [];
+  const recoverableYears = recClient ? getRecoverableYears(recClient) : [];
+  const recYear = recoverableYears.find(y => y === recSelYear);
+  const paidByYearRec = recClient ? getPaidPtsByYear(recClient, payments) : {};
+  const recPts = recYear ? Math.min(paidByYearRec[recYear] || 0, recClient?.annualPoints || 0) : 0;
+  const expiryRec = new Date(CY + 1, 11, 31).toISOString().split("T")[0];
+
+  const doCondonar = async () => {
+    if (!client || !selYear || !reason.trim()) return;
+    await onSaveCondonation(client.id, selYear, reason);
+    setCondonations(prev => [...prev, { id: Date.now(), clientId: client.id, clientName: client.name, maintYear: selYear, reason, authorizedByName: cu.name || cu.username, date: new Date().toISOString().split("T")[0] }]);
+    setConfirming(false); setSelYear(null); setReason("");
+  };
+
+  const doRecuperar = async () => {
+    if (!recClient || !recSelYear || !recReason.trim() || recPts <= 0) return;
+    await onSaveRecoveredPoints(recClient.id, recPts, recSelYear, `[RECUPERACIÓN] Año ${recSelYear} — ${recReason}`);
+    setRecConfirming(false); setRecSelYear(null); setRecReason("");
+  };
+
+  const btnStyle = (active) => ({ background: active ? IND : BG2, color: active ? "#fff" : T4, border: `1px solid ${active ? IND : BD}`, borderRadius: 7, padding: "5px 14px", fontSize: 11, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" });
+
+  return (<div style={{ padding: 20, color: T1 }}>
+    <div style={{ display: "flex", gap: 6, marginBottom: 20, borderBottom: `1px solid ${BD}`, paddingBottom: 12 }}>
+      <button style={btnStyle(stab === "cond")} onClick={() => setStab("cond")}>⚖ Condonar Mantenimiento</button>
+      <button style={btnStyle(stab === "rec")} onClick={() => setStab("rec")}>🔄 Recuperar Puntos</button>
+      <button style={btnStyle(stab === "hist")} onClick={() => setStab("hist")}>📋 Historial</button>
+    </div>
+
+    {/* ── CONDONAR ── */}
+    {stab === "cond" && <div style={{ maxWidth: 600 }}>
+      <div style={{ background: R + "15", border: `1px solid ${R}44`, borderRadius: 8, padding: "10px 14px", marginBottom: 16, fontSize: 10, color: R }}>
+        ⚠ La condonación cancela la deuda de mantenimiento de un año sin otorgar puntos al cliente. Solo aplica a años con mantenimiento vencido e impago. Esta acción queda registrada en auditoría.
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div>
+          <div style={{ fontSize: 9, color: T4, textTransform: "uppercase", marginBottom: 5 }}>Cliente</div>
+          <SearchBox clients={clients} onSelect={id => { setSelC(id); setSelYear(null); setConfirming(false); }} selectedId={selC} />
+        </div>
+        {client && condonableYears.length === 0 && <div style={{ background: G + "15", border: `1px solid ${G}44`, borderRadius: 6, padding: "10px 14px", fontSize: 11, color: G }}>
+          ✓ Este cliente no tiene años vencidos disponibles para condonar.
+        </div>}
+        {client && condonableYears.length > 0 && <>
+          <div>
+            <div style={{ fontSize: 9, color: T4, textTransform: "uppercase", marginBottom: 5 }}>Año a condonar</div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {condonableYears.map(yr => (
+                <button key={yr} onClick={() => { setSelYear(yr); setConfirming(false); }} style={{ background: selYear === yr ? R + "33" : BG3, border: `1px solid ${selYear === yr ? R : BD}`, color: selYear === yr ? R : T2, borderRadius: 6, padding: "5px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                  {yr}
+                </button>
+              ))}
+            </div>
+          </div>
+          {selYear && <div>
+            <div style={{ fontSize: 9, color: T4, textTransform: "uppercase", marginBottom: 5 }}>Motivo (obligatorio)</div>
+            <textarea value={reason} onChange={e => setReason(e.target.value)} placeholder="Describe el motivo de la condonación..." rows={3} style={{ ...IS, resize: "vertical", fontSize: 11 }} />
+          </div>}
+          {selYear && reason.trim() && !confirming && (
+            <div style={{ background: R + "15", border: `1px solid ${R}55`, borderRadius: 8, padding: "12px 14px" }}>
+              <div style={{ fontSize: 11, color: T1, marginBottom: 8 }}>
+                ¿Confirmas condonar el mantenimiento de <b style={{ color: R }}>{selYear}</b> para <b style={{ color: T1 }}>{client.name}</b>?
+              </div>
+              <div style={{ fontSize: 10, color: T3, marginBottom: 10 }}>
+                • El cliente NO recibirá los {fP(client.annualPoints)} de ese año<br />
+                • El año quedará marcado como "Condonado" en su historial<br />
+                • Esta acción no se puede deshacer
+              </div>
+              <Btn label="Confirmar Condonación" variant="danger" onClick={() => setConfirming(true)} />
+            </div>
+          )}
+          {confirming && (
+            <div style={{ background: R + "25", border: `2px solid ${R}`, borderRadius: 8, padding: "14px 16px" }}>
+              <div style={{ fontSize: 12, color: R, fontWeight: 700, marginBottom: 10 }}>⚠ ÚLTIMA CONFIRMACIÓN</div>
+              <div style={{ fontSize: 11, color: T2, marginBottom: 12 }}>
+                Condonar mantenimiento <b>{selYear}</b> de <b>{client.name}</b>.<br />Motivo: {reason}
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <Btn label="Cancelar" variant="ghost" onClick={() => setConfirming(false)} />
+                <Btn label="✓ Sí, condonar definitivamente" variant="danger" onClick={doCondonar} />
+              </div>
+            </div>
+          )}
+        </>}
+        {/* Condonaciones ya aplicadas al cliente */}
+        {client && condYears.length > 0 && <div style={{ marginTop: 8 }}>
+          <div style={{ fontSize: 9, color: T4, textTransform: "uppercase", marginBottom: 5 }}>Años ya condonados</div>
+          <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+            {condYears.map(yr => <span key={yr} style={{ background: R + "20", border: `1px solid ${R}44`, color: R, borderRadius: 5, padding: "3px 9px", fontSize: 11, fontWeight: 700 }}>⚖ {yr}</span>)}
+          </div>
+        </div>}
+      </div>
+    </div>}
+
+    {/* ── RECUPERAR PUNTOS ── */}
+    {stab === "rec" && <div style={{ maxWidth: 600 }}>
+      <div style={{ background: B + "15", border: `1px solid ${B}44`, borderRadius: 8, padding: "10px 14px", marginBottom: 16, fontSize: 10, color: B }}>
+        ℹ Solo se pueden recuperar puntos de años cuyo mantenimiento fue pagado, que hayan vencido, y que no estén ya recuperados. El período máximo es de 2 años anteriores al actual ({CY - 2} y {CY - 1}). Los puntos recuperados vencen el <b>{expiryRec}</b>.
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div>
+          <div style={{ fontSize: 9, color: T4, textTransform: "uppercase", marginBottom: 5 }}>Cliente</div>
+          <SearchBox clients={clients} onSelect={id => { setRecSelC(id); setRecSelYear(null); setRecConfirming(false); }} selectedId={recSelC} />
+        </div>
+        {recClient && recoverableYears.length === 0 && <div style={{ background: Y + "15", border: `1px solid ${Y}44`, borderRadius: 6, padding: "10px 14px", fontSize: 11, color: Y }}>
+          ⚠ Este cliente no tiene puntos recuperables en los últimos 2 años ({CY - 2}–{CY - 1}). Puede ser porque no pagó esos años, o porque los puntos ya fueron recuperados previamente.
+        </div>}
+        {recClient && recoverableYears.length > 0 && <>
+          <div>
+            <div style={{ fontSize: 9, color: T4, textTransform: "uppercase", marginBottom: 5 }}>Año a recuperar</div>
+            <div style={{ display: "flex", gap: 6 }}>
+              {recoverableYears.map(yr => (
+                <button key={yr} onClick={() => { setRecSelYear(yr); setRecConfirming(false); }} style={{ background: recSelYear === yr ? B + "33" : BG3, border: `1px solid ${recSelYear === yr ? B : BD}`, color: recSelYear === yr ? B : T2, borderRadius: 6, padding: "8px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                  {yr}
+                  <div style={{ fontSize: 9, color: recSelYear === yr ? B : T4, marginTop: 2 }}>{fP(Math.min(paidByYearRec[yr] || 0, recClient.annualPoints))} disponibles</div>
+                </button>
+              ))}
+            </div>
+          </div>
+          {recSelYear && <div>
+            <div style={{ fontSize: 9, color: T4, textTransform: "uppercase", marginBottom: 5 }}>Motivo (obligatorio)</div>
+            <textarea value={recReason} onChange={e => setRecReason(e.target.value)} placeholder="Describe el motivo de la recuperación..." rows={3} style={{ ...IS, resize: "vertical", fontSize: 11 }} />
+          </div>}
+          {recSelYear && recReason.trim() && !recConfirming && (
+            <div style={{ background: B + "15", border: `1px solid ${B}55`, borderRadius: 8, padding: "12px 14px" }}>
+              <div style={{ fontSize: 11, color: T1, marginBottom: 8 }}>
+                ¿Confirmas recuperar <b style={{ color: B }}>{fP(recPts)}</b> de <b>{recSelYear}</b> para <b>{recClient.name}</b>?
+              </div>
+              <div style={{ fontSize: 10, color: T3, marginBottom: 10 }}>
+                • Los puntos quedarán disponibles inmediatamente<br />
+                • Vencen el <b style={{ color: Y }}>{expiryRec}</b><br />
+                • Esta acción queda registrada en el historial del cliente
+              </div>
+              <Btn label="Recuperar Puntos" variant="success" onClick={() => setRecConfirming(true)} />
+            </div>
+          )}
+          {recConfirming && (
+            <div style={{ background: G + "20", border: `2px solid ${G}`, borderRadius: 8, padding: "14px 16px" }}>
+              <div style={{ fontSize: 12, color: G, fontWeight: 700, marginBottom: 10 }}>✓ CONFIRMACIÓN FINAL</div>
+              <div style={{ fontSize: 11, color: T2, marginBottom: 12 }}>
+                Recuperar <b>{fP(recPts)}</b> del año <b>{recSelYear}</b> para <b>{recClient.name}</b>.<br />Vencen el {expiryRec}. Motivo: {recReason}
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <Btn label="Cancelar" variant="ghost" onClick={() => setRecConfirming(false)} />
+                <Btn label="✓ Confirmar recuperación" variant="success" onClick={doRecuperar} />
+              </div>
+            </div>
+          )}
+        </>}
+      </div>
+    </div>}
+
+    {/* ── HISTORIAL ── */}
+    {stab === "hist" && <div>
+      <h3 style={{ color: T2, fontWeight: 700, marginBottom: 14, fontSize: 13 }}>Historial de Condonaciones</h3>
+      {condonations.length === 0 ? <div style={{ color: T4, textAlign: "center", padding: 24 }}>Sin condonaciones registradas.</div> : (
+        <Tbl cols={["Fecha", "Cliente", "Año", "Motivo", "Autorizado por"]}
+          rows={condonations.map(c => (<tr key={c.id} style={{ borderBottom: `1px solid ${BG3}` }}>
+            <td style={tS()}>{c.date}</td>
+            <td style={tW()}>{c.clientName} <span style={{ color: T4, fontSize: 9 }}>{c.contractNo}</span></td>
+            <td style={td({ color: R, fontWeight: 700 })}>{c.maintYear}</td>
+            <td style={tG3()}>{c.reason}</td>
+            <td style={tPs()}>{c.authorizedByName || c.authorizedByUsername || "—"}</td>
+          </tr>))}
+        />
+      )}
+    </div>}
+  </div>);
+}
 // ── APP ROOT ─────────────────────────────────────────────────────────────────
 const MONTHS_ES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 export default function App() {
@@ -2585,6 +2819,7 @@ export default function App() {
   const [pms, setPms] = useState([]);
   const [rc, setRc] = useState(150);
   const [courtesies, setCourtesies] = useState([]);
+  const [condonations, setCondonations] = useState([]);
   const [cr, setCr] = useState(INIT_CR);
   const [promises, setPromises] = useState([]);
   const [pendingSales, setPendingSales] = useState([]);
@@ -2649,6 +2884,13 @@ export default function App() {
         if (dbCourtesies.length > 0) setCourtesies(dbCourtesies);
       } catch (e) { console.warn('No se pudo cargar cortesías:', e.message); }
 
+      // Cargar condonaciones (necesario antes de calcular saldo dinámico)
+      let dbCondonations = [];
+      try {
+        dbCondonations = await fetchCondonations();
+        setCondonations(dbCondonations);
+      } catch (e) { console.warn('No se pudo cargar condonaciones:', e.message); }
+
       // Calcular occ en units desde reservaciones
       const unitsWithOcc = dbUnits.map(u => ({
         ...u,
@@ -2665,7 +2907,7 @@ export default function App() {
       // Calcular saldo dinámico de cada cliente desde años pendientes (en MXN, usando pp y fx)
       const fxForBalance = dbFxRate?.rate || 17.5;
       const dynClients = (dbClients.length > 0 ? dbClients : INIT_C).map(c => {
-        const desg = getMaintDesglose(c, dbPayments, pp);
+        const desg = getMaintDesglose(c, dbPayments, pp, dbCondonations);
         const dyn = desg.reduce((a, d) => a + d.pendienteMXN, 0);
         // Calcular paid_points dinámicos: SOLO puntos del año en curso + año siguiente (prepago)
         // Los puntos de años anteriores están vencidos y NO se cuentan como disponibles.
@@ -3109,6 +3351,28 @@ export default function App() {
     }
   };
 
+  const saveCondonation = async (clientId, maintYear, reason) => {
+    try {
+      const dbUser = users.find(u => u.username === cu?.username);
+      await insertCondonation(clientId, maintYear, reason, dbUser?.id || null);
+      await loadAll();
+    } catch (e) {
+      console.error('Error guardando condonación:', e);
+      alert('Error guardando condonación: ' + (e.message || JSON.stringify(e)));
+    }
+  };
+
+  const saveRecoveredPoints = async (clientId, points, maintYear, note) => {
+    try {
+      const dbUser = users.find(u => u.username === cu?.username);
+      await insertSavedPoints(clientId, points, maintYear, dbUser?.id || null, note);
+      await loadAll();
+    } catch (e) {
+      console.error('Error recuperando puntos:', e);
+      alert('Error recuperando puntos: ' + (e.message || JSON.stringify(e)));
+    }
+  };
+
   const login = u => { setCu(u); setTab(RT[u.role][0]); };
   const logout = () => { setCu(null); setTab(null); setClients([]); setPayments([]); };
 
@@ -3172,7 +3436,7 @@ export default function App() {
         <div style={{ fontSize: 15, fontWeight: 800, color: T2, marginBottom: 15, letterSpacing: ".03em" }}>{active?.l}</div>
         {tab === "dash" && <Dashboard clients={clients} reservations={reservations} payments={payments} pp={pp} promises={promises} users={users} />}
         {tab === "clients" && <ClientsView clients={clients} setClients={setClients} pp={pp} cu={cu} payments={payments} reservations={reservations} users={users} onGoToCashier={cid => { setPreselClient(cid); setTab("cashier"); }} onGoToRes={cid => { setPreselResClient(cid); setTab("res"); }} onSaveClient={saveClient} onAddPhone={addClientPhone} onSetPhoneActive={setClientPhoneActive} onAddEmail={addClientEmail} onSetEmailActive={setClientEmailActive} onAddAddress={addClientAddress} onSetAddressActive={setClientAddressActive} onAddComment={addClientComment} onSaveSavedPoints={saveSavedPoints} />}
-        {tab === "cashier" && <CashierView clients={clients} payments={payments} setPayments={setPayments} setClients={setClients} pp={pp} pms={pms} cu={cu} users={users} cr={cr} pendingPayments={pendingPayments} setPendingPayments={setPendingPayments} promises={promises} setPromises={setPromises} fxRate={fxRate} setFxRate={setFxRate} preselClientId={preselClient} onClearPresel={() => setPreselClient(null)} onSavePayment={savePayment} onSavePending={savePendingPayment} onRejectPending={rejectPendingPayment} onSaveFxRate={saveFxRate} />}
+        {tab === "cashier" && <CashierView clients={clients} payments={payments} setPayments={setPayments} setClients={setClients} pp={pp} pms={pms} cu={cu} users={users} cr={cr} condonations={condonations} pendingPayments={pendingPayments} setPendingPayments={setPendingPayments} promises={promises} setPromises={setPromises} fxRate={fxRate} setFxRate={setFxRate} preselClientId={preselClient} onClearPresel={() => setPreselClient(null)} onSavePayment={savePayment} onSavePending={savePendingPayment} onRejectPending={rejectPendingPayment} onSaveFxRate={saveFxRate} />}
         {tab === "res" && <ReservationsView clients={clients} reservations={reservations} setReservations={setReservations} units={units} setUnits={setUnits} uts={uts} cu={cu} rc={rc} payments={payments} preselClientId={preselResClient} onClearPresel={() => setPreselResClient(null)} onSaveReservation={saveReservation} onCancelReservation={cancelReservation} />}
         {tab === "col" && <CollectionsView clients={clients} payments={payments} pp={pp} promises={promises} setPromises={setPromises} cu={cu} fxRate={fxRate} onSavePromise={savePromise} onUpdatePromise={updatePromiseStatus} />}
         {tab === "reports" && <ReportsView clients={clients} reservations={reservations} payments={payments} pp={pp} users={users} role={cu.role} courtesies={courtesies} rc={rc} />}
@@ -3183,6 +3447,7 @@ export default function App() {
         {tab === "team" && <TeamView users={users} setUsers={setUsers} clients={clients} setClients={setClients} payments={payments} reservations={reservations} onAssignGestor={assignGestor} onCancelContract={cancelContract} onSaveUser={saveUser} />}
         {tab === "contracts" && <ContractsView clients={clients} setClients={setClients} />}
         {tab === "courtesies" && <CourtesiesView clients={clients} setClients={setClients} courtesies={courtesies} setCourtesies={setCourtesies} pp={pp} cu={cu} users={users} onSaveCourtesy={saveCourtesy} />}
+        {tab === "special" && <SpecialMgmtView clients={clients} payments={payments} condonations={condonations} setCondonations={setCondonations} cu={cu} users={users} pp={pp} onSaveCondonation={saveCondonation} onSaveRecoveredPoints={saveRecoveredPoints} />}
         {tab === "ec" && <MyAccountView cu={cu} users={users} payments={payments} pms={pms} fxRate={fxRate} cr={cr} />}
         {tab === "ps" && <PointSalesView clients={clients} setClients={setClients} payments={payments} setPayments={setPayments} pp={pp} pms={pms} cu={cu} pendingSales={pendingSales} setPendingSales={setPendingSales} onSavePointSale={savePointSale} />}
       </div>
