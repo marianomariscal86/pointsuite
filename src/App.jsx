@@ -1997,7 +1997,7 @@ function ReportsView({ clients, reservations, payments, pp, users, role, courtes
       <Tbl cols={["Empleado", "Rol", "Sueldo", "Costo Tx", "Comm Cobros", "Comm Res", "Total", "Ingresos", "Ratio"]}
         rows={staff.map(u => {
           const uP = filteredPayments.filter(p => p.processedBy === u.username); const uR = filteredReservations.filter(r => r.processedBy === u.username); const txC2 = uP.reduce((a, p) => a + p.amount * (p.costPct || 0) / 100, 0); const cC = uP.reduce((a, p) => a + p.amount * (0), 0); const cR = uR.length * rc; const tot = (u.salary || 0) + txC2 + cC + cR; const rev = uP.reduce((a, p) => a + p.amount, 0); const ratio = rev > 0 ? tot / rev : 0; return (<tr key={u.id} style={{ borderBottom: `1px solid ${BG3}` }}>
-            <td style={td()}><div style={{ display: "flex", alignItems: "center", gap: 6 }}><div style={{ width: 18, height: 18, borderRadius: 5, background: u.color + "20", border: `1px solid ${u.color}33`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: u.color, fontWeight: 700 }}>{u.name[0]}</div><span style={{ color: T1, fontWeight: 600, fontSize: 11 }}>{u.name}</span></div></td>
+            <td style={td()}><div style={{ display: "flex", alignItems: "center", gap: 6 }}><div style={{ width: 18, height: 18, borderRadius: 5, background: (u.color||P) + "20", border: `1px solid ${(u.color||P)}33`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: u.color||P, fontWeight: 700 }}>{(u.name||u.username||"?")[0]}</div><span style={{ color: T1, fontWeight: 600, fontSize: 11 }}>{u.name}</span></div></td>
             <td style={td()}><RBdg r={u.role} /></td>
             <td style={td({ color: B })}>{f$(u.salary || 0)}</td>
             <td style={tY()}>{f$(txC2)}</td>
@@ -2496,7 +2496,7 @@ function CompView({ users, setUsers, payments, reservations, pp, rc, setRc, cr, 
           const totalCosto = (u.salary || 0) + (u.socialCost || 0);
           const pctSocial = u.salary > 0 ? ((u.socialCost || 0) / u.salary * 100).toFixed(1) : "0.0";
           return (<tr key={u.id} style={{ borderBottom: `1px solid ${BG3}` }}>
-            <td style={td()}><div style={{ display: "flex", alignItems: "center", gap: 6 }}><div style={{ width: 18, height: 18, borderRadius: 5, background: u.color + "20", border: `1px solid ${u.color}33`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: u.color, fontWeight: 700 }}>{u.name[0]}</div><span style={{ color: T1, fontWeight: 600, fontSize: 11 }}>{u.name}</span></div></td>
+            <td style={td()}><div style={{ display: "flex", alignItems: "center", gap: 6 }}><div style={{ width: 18, height: 18, borderRadius: 5, background: (u.color||P) + "20", border: `1px solid ${(u.color||P)}33`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: u.color||P, fontWeight: 700 }}>{(u.name||u.username||"?")[0]}</div><span style={{ color: T1, fontWeight: 600, fontSize: 11 }}>{u.name}</span></div></td>
             <td style={td()}><RBdg r={u.role} /></td>
             <td style={td({ color: B })}>{f$(u.salary || 0)}</td>
             <td style={td({ color: O })}>{f$(u.socialCost || 0)}<span style={{ color: T4, fontSize: 9, marginLeft: 4 }}>({pctSocial}%)</span></td>
@@ -2577,7 +2577,7 @@ function UsersView({ cu, users, setUsers, rc, onSaveUser }) {
     </Modal>}
     <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}><Btn label="+ Nuevo Usuario" onClick={() => { setForm({ username: "", password: "", name: "", role: "gestor", color: P, salary: 0, socialCost: 0 }); setModal("new"); }} /></div>
     <Tbl cols={["Usuario", "Nombre", "Rol", "Sueldo", "Costo Social", "Costo Total", "Activo", ""]} rows={users.map(u => (<tr key={u.id} style={{ borderBottom: `1px solid ${BG3}`, opacity: u.active === false ? .4 : 1 }}>
-      <td style={td()}><div style={{ display: "flex", alignItems: "center", gap: 6 }}><div style={{ width: 20, height: 20, borderRadius: 5, background: u.color + "20", border: `1px solid ${u.color}33`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: u.color, fontWeight: 700 }}>{u.username[0].toUpperCase()}</div><span style={{ color: T1, fontWeight: 600 }}>{u.username}</span>{u.id === cu.id && <span style={{ fontSize: 8, color: T4, border: `1px solid ${BD}`, borderRadius: 4, padding: "1px 4px" }}>tú</span>}</div></td>
+      <td style={td()}><div style={{ display: "flex", alignItems: "center", gap: 6 }}><div style={{ width: 20, height: 20, borderRadius: 5, background: (u.color || P) + "20", border: `1px solid ${(u.color || P)}33`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: u.color || P, fontWeight: 700 }}>{(u.username || u.name || "?")[0].toUpperCase()}</div><span style={{ color: T1, fontWeight: 600 }}>{u.username}</span>{u.id === cu.id && <span style={{ fontSize: 8, color: T4, border: `1px solid ${BD}`, borderRadius: 4, padding: "1px 4px" }}>tú</span>}</div></td>
       <td style={tG3()}>{u.name}</td>
       <td style={td()}><RBdg r={u.role} /></td>
       <td style={tT2()}>{f$(u.salary || 0)}</td>
