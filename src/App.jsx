@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
 import { supabase } from './supabase.js';
 import {
-  fetchClients, updateClient, insertClient, insertSavedPoints,
+  fetchClients, updateClient, insertClient, insertLegacyClient, insertSavedPoints,
   insertClientPhone, updateClientPhone,
   insertClientEmail, updateClientEmail,
   insertClientAddress, updateClientAddress,
@@ -178,8 +178,8 @@ const mkE = (label, email, active = true) => ({ label, email, active });
 const mkA = (label, text, active = true) => ({ label, text, active });
 const mkC = (text, by, date) => ({ id: Math.random(), text, by, date });
 const RM = { superadmin: { l: "Super Admin", c: B }, admin: { l: "Admin", c: Y }, cajero: { l: "Cajero", c: G }, gestor: { l: "Gestor", c: P } };
-const RT = { superadmin: ["dash", "clients", "cashier", "res", "col", "reports", "config", "pmethods", "comp", "users", "special"], admin: ["dash", "clients", "reports", "config", "team", "contracts", "courtesies", "ps", "special"], cajero: ["cashier", "clients", "ps"], gestor: ["res", "col", "cashier", "clients", "ec", "ps"] };
-const ATABS = [{ id: "dash", l: "Dashboard", i: "◈" }, { id: "clients", l: "Clientes", i: "◉" }, { id: "cashier", l: "Caja", i: "◐" }, { id: "res", l: "Reservaciones", i: "◫" }, { id: "col", l: "Cobranzas", i: "◎" }, { id: "reports", l: "Reportes", i: "◧" }, { id: "config", l: "Config", i: "◬" }, { id: "pmethods", l: "Medios de Pago", i: "◆" }, { id: "comp", l: "Sueldos", i: "◇" }, { id: "users", l: "Usuarios", i: "◭" }, { id: "team", l: "Mi Equipo", i: "◩" }, { id: "contracts", l: "Contratos", i: "◪" }, { id: "courtesies", l: "Cortesías", i: "◤" }, { id: "ec", l: "Mi Estado de Cuenta", i: "◊" }, { id: "special", l: "Gestión Especial", i: "◈" }, { id: "ps", l: "Venta Puntos", i: "◥" }];
+const RT = { superadmin: ["dash", "clients", "cashier", "res", "col", "reports", "config", "pmethods", "comp", "users", "special", "legacy"], admin: ["dash", "clients", "reports", "config", "team", "contracts", "courtesies", "ps", "special", "legacy"], cajero: ["cashier", "clients", "ps"], gestor: ["res", "col", "cashier", "clients", "ec", "ps"] };
+const ATABS = [{ id: "dash", l: "Dashboard", i: "◈" }, { id: "clients", l: "Clientes", i: "◉" }, { id: "cashier", l: "Caja", i: "◐" }, { id: "res", l: "Reservaciones", i: "◫" }, { id: "col", l: "Cobranzas", i: "◎" }, { id: "reports", l: "Reportes", i: "◧" }, { id: "config", l: "Config", i: "◬" }, { id: "pmethods", l: "Medios de Pago", i: "◆" }, { id: "comp", l: "Sueldos", i: "◇" }, { id: "users", l: "Usuarios", i: "◭" }, { id: "team", l: "Mi Equipo", i: "◩" }, { id: "contracts", l: "Contratos", i: "◪" }, { id: "courtesies", l: "Cortesías", i: "◤" }, { id: "ec", l: "Mi Estado de Cuenta", i: "◊" }, { id: "special", l: "Gestión Especial", i: "◈" }, { id: "legacy", l: "Alta Contratos", i: "⊕" }, { id: "ps", l: "Venta Puntos", i: "◥" }];
 const INIT_U = [
   { id: 1, username: "superadmin", password: "admin", role: "superadmin", name: "Super Administrador", color: B, salary: 0, commissions: { collection: 0 }, active: true },
   { id: 2, username: "admin1", password: "admin", role: "admin", name: "Carmen Ríos", color: Y, salary: 5000, commissions: { collection: 0.015 }, active: true },
@@ -1751,34 +1751,54 @@ function CollectionsView({ clients, payments, pp, promises, setPromises, cu, fxR
   </div>);
 }
 // ── POINT SALES ──────────────────────────────────────────────────────────────
-function PointSalesView({ clients, setClients, payments, setPayments, pp, pms, cu, pendingSales, setPendingSales, onSavePointSale }) {
+function PointSalesView({ clients, setClients, payments, setPayments, pp, pms, cu, pendingSales, setPendingSales, onSavePointSale, pointPrices, fxRate }) {
   const isAdmin = ["superadmin", "admin"].includes(cu.role), isCajero = cu.role === "cajero";
   const [sid, setSid] = useState(null), [stype, setStype] = useState("immediate"), [pts, setPts] = useState(""), [mid, setMid] = useState("1"), [note, setNote] = useState(""), [date, setDate] = useState(new Date().toISOString().split("T")[0]), [ok, setOk] = useState(null), [eYr, setEYr] = useState(0), [eAn, setEAn] = useState(0), [showSim, setShowSim] = useState(false);
-  // Precio por punto personalizable — mínimo $2 USD, sin máximo
+  // Precio de VENTA por punto (lo establece el gestor, mín $2 USD, sin máximo)
   const [customPP, setCustomPP] = useState(pp);
   useEffect(() => { setCustomPP(pp); }, [pp]);
   const activePP = Math.max(2, +customPP || pp);
   const ppError = +customPP > 0 && +customPP < 2;
 
+  // Precio de MANTENIMIENTO del año en curso (de point_prices, config por admin)
+  const maintPricePerPt = getPriceForYear(pointPrices || [], CY);
+
   const client = clients.find(c => c.id === sid), pm = pms.find(m => m.id === +mid) || pms[0];
-  // Costo de mantenimiento adicional para puntos de uso inmediato
-  const maint = (pts && stype === "immediate") ? +pts * activePP : 0;
-  const ptsCost = pts ? +pts * activePP : 0;
-  const totalCost = stype === "immediate" ? ptsCost + maint : ptsCost;
-  const txC = totalCost * (pm?.costPct || 0) / 100;
-  const yr = client ? Math.max(1, (client.contractYears || 1) - (client.yearsElapsed || 0)) : 1, newYr = yr + (+eYr || 0), newTot = (client?.totalPoints || 0) + (+pts || 0);
+  const fx = fxRate?.rate || 17.5;
+
+  // Para uso inmediato: cobra venta + mantenimiento del año en curso
+  // Para otros tipos: solo precio de venta
+  const ptsSaleUsd = pts ? +pts * activePP : 0;
+  const ptsMaintUsd = (pts && stype === "immediate") ? +pts * maintPricePerPt : 0;
+  const totalUsd = ptsSaleUsd + ptsMaintUsd;
+  const totalMxn = totalUsd * fx;
+  const txC = totalMxn * (pm?.costPct || 0) / 100;
+
+  const yr = client ? Math.max(1, (client.contractYears || 1) - (client.yearsElapsed || 0)) : 1;
+  const newYr = yr + (+eYr || 0), newTot = (client?.totalPoints || 0) + (+pts || 0);
   let fA = 0;
   if (stype === "increase_annual" && +eAn > 0) fA = (client?.annualPoints || 0) + (+eAn);
   else if (stype === "hybrid") fA = +eAn > 0 ? (client?.annualPoints || 0) + (+eAn) : calcAP(newTot, client?.pointsUsedToDate || 0, Math.max(1, (client?.contractYears || 1) + (+eYr || 0) - (client?.yearsElapsed || 0)));
   else fA = calcAP(newTot, client?.pointsUsedToDate || 0, newYr);
   const minA = client?.annualPoints || 0;
-  const aOk = stype === "immediate" || fA >= minA, canSub = !isCajero && client && pts && +pts > 0 && aOk && !ppError;
+  const aOk = stype === "immediate" || fA >= minA;
+  const canSub = !isCajero && client && pts && +pts > 0 && aOk && !ppError;
   const now = Date.now();
+
   const submit = () => {
     if (!canSub) return;
-    if (activePP < 2) { alert("El precio mínimo por punto es $2.00 USD"); return; }
-    const sale = { id: Date.now(), clientId: client.id, clientName: client.name, contractNo: client.contractNo, date, pts: +pts, stype, eYr: +eYr || 0, eAn: +eAn || 0, totalCost, pricePerPt: activePP, pm: pm?.name || "", costPct: pm?.costPct || 0, note, submittedBy: cu.username, submittedAt: new Date().toISOString(), expiresAt: new Date(now + 48 * 3600000).toISOString(), status: "Pendiente" };
-    setPendingSales(ps => [...ps, sale]); setOk({ name: client.name, pts: +pts, cost: totalCost, id: sale.id }); setPts(""); setNote(""); setSid(null); setEYr(0); setEAn(0); setShowSim(false);
+    const sale = {
+      id: Date.now(), clientId: client.id, clientName: client.name, contractNo: client.contractNo,
+      date, pts: +pts, stype, eYr: +eYr || 0, eAn: +eAn || 0,
+      totalCost: totalMxn, totalUsd,
+      pricePerPt: activePP, maintPricePerPt, ptsMaintUsd, ptsSaleUsd,
+      pm: pm?.name || "", costPct: pm?.costPct || 0, note,
+      submittedBy: cu.username, submittedAt: new Date().toISOString(),
+      expiresAt: new Date(now + 48 * 3600000).toISOString(), status: "Pendiente"
+    };
+    setPendingSales(ps => [...ps, sale]);
+    setOk({ name: client.name, pts: +pts, cost: totalMxn, id: sale.id });
+    setPts(""); setNote(""); setSid(null); setEYr(0); setEAn(0); setShowSim(false);
   };
   const validate = id => {
     const sale = pendingSales.find(s => s.id === id); if (!sale) return;
@@ -1794,7 +1814,9 @@ function PointSalesView({ clients, setClients, payments, setPayments, pp, pms, c
       onSavePointSale({
         clientId: sale.clientId, stype: sale.stype, pts: sale.pts,
         eYr: sale.eYr || 0, eAn: sale.eAn || 0,
-        totalMxn: sale.totalCost, totalUsd: 0,
+        totalMxn: sale.totalCost,
+        totalUsd: sale.totalUsd || sale.totalCost / fx,
+        pricePerPt: sale.pricePerPt || pp,
         newTotalPoints: nT, newAnnualPoints: nA, newContractYears: nCY,
         note: sale.note,
       });
@@ -1813,7 +1835,7 @@ function PointSalesView({ clients, setClients, payments, setPayments, pp, pms, c
           const hrs = Math.max(0, Math.round((new Date(s.expiresAt).getTime() - now) / 3600000)); return (<div key={s.id} style={{ background: BG3, borderRadius: 8, padding: "11px", marginBottom: 9, border: `1px solid ${Y}33` }}>
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}><div><b style={{ color: T1 }}>{s.clientName}</b><span style={{ color: T4, fontSize: 10, marginLeft: 7 }}>{s.contractNo}</span></div><span style={{ color: Y, fontSize: 10 }}>Expira en {hrs}h</span></div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 5, marginBottom: 8, fontSize: 10 }}>
-              {[["Pts", s.pts.toLocaleString(), P], ["Tipo", s.stype, T3], ["Total", f$(s.totalCost), G]].map(([l, v, c]) => (<div key={l}><div style={{ fontSize: 8, color: T4, textTransform: "uppercase" }}>{l}</div><div style={{ color: c, fontWeight: 700 }}>{v}</div></div>))}
+              {[["Pts", s.pts.toLocaleString(), P], ["Tipo", s.stype === "immediate" ? "Inmediato" : s.stype, T3], ["Total", fMXN(s.totalCost), G]].map(([l, v, c]) => (<div key={l}><div style={{ fontSize: 8, color: T4, textTransform: "uppercase" }}>{l}</div><div style={{ color: c, fontWeight: 700 }}>{v}</div></div>))}
             </div>
             <div style={{ fontSize: 9, color: T4, marginBottom: 7 }}>Por: {s.submittedBy}·{s.note}</div>
             <div style={{ display: "flex", gap: 7 }}><Btn label="✓ Validar y Aplicar" variant="success" onClick={() => validate(s.id)} /><Btn label="✗ Cancelar" variant="danger" small onClick={() => cancel(s.id)} /></div>
@@ -1829,9 +1851,15 @@ function PointSalesView({ clients, setClients, payments, setPayments, pp, pms, c
           </div>}
           <Inp label="Tipo de venta" value={stype} onChange={v => { setStype(v); setEYr(0); setEAn(0); }} opts={tOpts} />
           <div>
-            <Inp label="Precio por punto (USD) — mín. $2.00 USD" value={customPP} onChange={v => setCustomPP(+v)} type="number" />
-            {ppError && <div style={{ color: R, fontSize: 10, marginTop: 3, fontWeight: 700 }}>⛔ El precio mínimo es $2.00 USD por punto.</div>}
-            {!ppError && customPP > 0 && +customPP !== pp && <div style={{ color: Y, fontSize: 10, marginTop: 3 }}>Precio del sistema: ${pp} USD · Precio aplicado: ${customPP} USD</div>}
+            <Inp label="Precio de VENTA por punto (USD) — mín. $2.00 USD" value={customPP} onChange={v => setCustomPP(+v)} type="number" />
+            {ppError && <div style={{ color: R, fontSize: 10, marginTop: 3, fontWeight: 700 }}>⛔ El precio mínimo de venta es $2.00 USD por punto.</div>}
+            {!ppError && customPP > 0 && <div style={{ color: T4, fontSize: 9, marginTop: 3 }}>Precio de venta: {fUSD(activePP)}/pt{stype === "immediate" ? ` · Mantenimiento {CY}: ${fUSD(maintPricePerPt)}/pt (se cobra en esta transacción)` : " · Sin cargo de mantenimiento en esta compra"}</div>}
+            {stype === "immediate" && pts > 0 && !ppError && <div style={{ background: B + "12", borderRadius: 5, padding: "5px 8px", marginTop: 5, fontSize: 10 }}>
+              <div style={{ color: B, fontWeight: 700 }}>Desglose del cobro:</div>
+              <div style={{ color: T2 }}>Venta {pts} pts × {fUSD(activePP)} = <b>{fUSD(ptsSaleUsd)}</b></div>
+              <div style={{ color: T2 }}>Mantenimiento {CY}: {pts} pts × {fUSD(maintPricePerPt)} = <b>{fUSD(ptsMaintUsd)}</b></div>
+              <div style={{ color: T1, fontWeight: 700 }}>Total USD: {fUSD(totalUsd)} · Total MXN: {fMXN(totalMxn)}</div>
+            </div>}
           </div>
           <Inp label="Puntos a vender" value={pts} onChange={setPts} type="number" />
           {stype === "hybrid" && <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}><Inp label="Años adicionales" value={eYr} onChange={v => setEYr(Math.max(0, +v))} type="number" /><Inp label="Pts/año adicionales" value={eAn} onChange={v => setEAn(Math.max(0, +v))} type="number" /></div>}
@@ -1850,7 +1878,7 @@ function PointSalesView({ clients, setClients, payments, setPayments, pp, pms, c
           </div>}
         </div>}
         {pts > 0 && client && <div style={{ margin: "9px 0", padding: "8px", background: BG3, borderRadius: 7, display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
-          {[stype === "immediate" ? ["Pts+Mant.", f$(totalCost), P] : ["Costo pts", f$(ptsCost), P], stype === "immediate" ? ["(mant.)", f$(maint), Y] : ["Pts/año resul.", fA.toLocaleString(), aOk ? G : R], ["Costo tx", f$(txC), Y]].map(([l, v, c]) => (<div key={l}><div style={{ fontSize: 8, color: T4, textTransform: "uppercase" }}>{l}</div><div style={{ color: c, fontWeight: 700, fontSize: 11 }}>{v}</div></div>))}
+          {[["Total MXN", fMXN(totalMxn), P], stype === "immediate" ? ["Venta+Mant.", `${fUSD(ptsSaleUsd)}+${fUSD(ptsMaintUsd)}`, T2] : ["Solo venta", fUSD(ptsSaleUsd), T2], ["Costo tx", f$(txC), Y]].map(([l, v, c]) => (<div key={l}><div style={{ fontSize: 8, color: T4, textTransform: "uppercase" }}>{l}</div><div style={{ color: c, fontWeight: 700, fontSize: 11 }}>{v}</div></div>))}
         </div>}
         {!aOk && pts > 0 && <div style={{ color: R, fontSize: 10, marginBottom: 7 }}>⚠ No puede quedar con menos de {minA.toLocaleString()} pts/año.</div>}
         <Btn label="Enviar a Validación por Caja" onClick={submit} disabled={!canSub} />
@@ -3185,6 +3213,254 @@ function SpecialMgmtView({ clients, payments, condonations, setCondonations, cu,
     </div>}
   </div>);
 }
+
+// ── ALTA DE CONTRATOS PREEXISTENTES (MIGRACIÓN) ────────────────────────────
+function LegacyContractView({ cu, users, onSave }) {
+  const CY_NOW = new Date().getFullYear();
+  const emptyForm = () => ({
+    // Sección 1: Contrato
+    contractNo: '', name: '', coHolder: '',
+    contractDate: '', contractYears: 30, firstUseYear: CY_NOW,
+    contractStatus: 'Active', cancelDate: '', cancelReason: '',
+    assignedGestor: '',
+    // Sección 2: Puntos
+    totalPoints: 0, pointsUsedToDate: 0,
+    // Sección 3: Último mantenimiento pagado
+    lastPaidMaintYear: CY_NOW - 1,
+    // Sección 4: Puntos vigentes disponibles en este momento
+    hasAvailablePoints: false,
+    availPts: 0, availExpiry: `${CY_NOW}-12-31`, availMaintYear: CY_NOW,
+  });
+
+  const [form, setForm] = useState(emptyForm());
+  const [phones, setPhones] = useState([{ label: 'Casa', number: '' }, { label: 'Cel', number: '' }]);
+  const [emails, setEmails] = useState([{ label: 'Personal', email: '' }]);
+  const [addresses, setAddresses] = useState([{ label: 'Casa', address: '' }]);
+  const [comments, setComments] = useState([{ text: '' }]);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(null);
+  const [errors, setErrors] = useState({});
+
+  const setF = k => v => setForm(f => ({ ...f, [k]: v }));
+  const gestors = users.filter(u => u.role === "gestor" && u.active !== false);
+
+  // Cálculo automático de puntos anuales
+  const yearsInContract = Math.max(1, (form.firstUseYear ? CY_NOW - form.firstUseYear + 1 : form.contractYears) || 1);
+  const calcAnnualPts = form.totalPoints && form.contractYears
+    ? Math.ceil(form.totalPoints / form.contractYears)
+    : 0;
+
+  // Años de mantenimiento pendientes desde lastPaidMaintYear+1 hasta CY_NOW
+  const firstUnpaidYear = form.lastPaidMaintYear ? +form.lastPaidMaintYear + 1 : null;
+  const pendingYears = firstUnpaidYear ? Math.max(0, CY_NOW - firstUnpaidYear + 1) : 0;
+  const pendingAmountUSD = pendingYears * calcAnnualPts * 4.75;
+
+  const validate = () => {
+    const e = {};
+    if (!form.contractNo.trim()) e.contractNo = "Requerido";
+    if (!form.name.trim()) e.name = "Requerido";
+    if (!form.firstUseYear) e.firstUseYear = "Requerido";
+    if (!form.totalPoints || +form.totalPoints <= 0) e.totalPoints = "Debe ser > 0";
+    if (!form.contractYears || +form.contractYears <= 0) e.contractYears = "Debe ser > 0";
+    setErrors(e);
+    return Object.keys(e).length === 0;
+  };
+
+  const handleSave = async () => {
+    if (!validate()) return;
+    setSaving(true);
+    try {
+      const contract = {
+        ...form,
+        totalPoints: +form.totalPoints,
+        contractYears: +form.contractYears,
+        firstUseYear: +form.firstUseYear,
+        lastPaidMaintYear: form.lastPaidMaintYear ? +form.lastPaidMaintYear : null,
+        pointsUsedToDate: +form.pointsUsedToDate || 0,
+        annualPoints: calcAnnualPts,
+        yearsElapsed: form.firstUseYear ? CY_NOW - +form.firstUseYear : 0,
+        assignedGestor: form.assignedGestor || null,
+      };
+      const cleanPhones = phones.filter(p => p.number?.trim());
+      const cleanEmails = emails.filter(e => e.email?.trim());
+      const cleanAddresses = addresses.filter(a => a.address?.trim());
+      const cleanComments = comments.filter(c => c.text?.trim());
+      const availPts = form.hasAvailablePoints && +form.availPts > 0
+        ? { points: +form.availPts, expiryDate: form.availExpiry, maintYear: +form.availMaintYear }
+        : null;
+
+      const result = await onSave(contract, cleanPhones, cleanEmails, cleanAddresses, cleanComments, availPts);
+      setSaved({ contractNo: form.contractNo, name: form.name, id: result?.id });
+      setForm(emptyForm());
+      setPhones([{ label: 'Casa', number: '' }, { label: 'Cel', number: '' }]);
+      setEmails([{ label: 'Personal', email: '' }]);
+      setAddresses([{ label: 'Casa', address: '' }]);
+      setComments([{ text: '' }]);
+    } catch (e) {
+      alert('Error: ' + (e.message || JSON.stringify(e)));
+    }
+    setSaving(false);
+  };
+
+  const addRow = (setter) => setter(r => [...r, { label: '', number: '', email: '', address: '', text: '' }]);
+  const removeRow = (setter, i) => setter(r => r.filter((_, j) => j !== i));
+  const updateRow = (setter, i, field, val) => setter(r => r.map((x, j) => j === i ? { ...x, [field]: val } : x));
+
+  const Err = ({ k }) => errors[k] ? <div style={{ color: R, fontSize: 9, marginTop: 2 }}>{errors[k]}</div> : null;
+  const SectionTitle = ({ n, t, sub }) => (<div style={{ borderBottom: `2px solid ${B}33`, paddingBottom: 6, marginBottom: 14, marginTop: 22 }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <div style={{ width: 22, height: 22, borderRadius: "50%", background: B, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, flexShrink: 0 }}>{n}</div>
+      <div><div style={{ color: T1, fontWeight: 700, fontSize: 13 }}>{t}</div>{sub && <div style={{ color: T4, fontSize: 10 }}>{sub}</div>}</div>
+    </div>
+  </div>);
+
+  return (<div style={{ padding: 20, maxWidth: 900 }}>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
+      <div>
+        <h2 style={{ color: B, fontWeight: 800, margin: 0, fontSize: 20 }}>⊕ Alta de Contrato Preexistente</h2>
+        <div style={{ color: T4, fontSize: 11, marginTop: 4 }}>Para migración de contratos del sistema anterior. Solo admin/superadmin.</div>
+      </div>
+      {saved && <div style={{ background: G + "15", border: `1px solid ${G}44`, borderRadius: 8, padding: "10px 14px", fontSize: 11 }}>
+        <div style={{ color: G, fontWeight: 700 }}>✓ Contrato {saved.contractNo} dado de alta</div>
+        <div style={{ color: T3 }}>{saved.name}</div>
+      </div>}
+    </div>
+
+    {/* ─── SECCIÓN 1: CONTRATO ─── */}
+    <SectionTitle n="1" t="Datos del Contrato" />
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+      <div><Inp label="Número de contrato *" value={form.contractNo} onChange={setF("contractNo")} /><Err k="contractNo" /></div>
+      <Inp label="Fecha de firma del contrato" value={form.contractDate} onChange={setF("contractDate")} type="date" />
+      <Inp label="Plazo total del contrato (años) *" value={form.contractYears} onChange={setF("contractYears")} type="number" />
+      <Inp label="Estado del contrato" value={form.contractStatus} onChange={setF("contractStatus")} opts={[{ v: "Active", l: "Activo" }, { v: "Cancelado s/pago", l: "Cancelado sin pago" }, { v: "Cancelado c/pago", l: "Cancelado con pago" }]} />
+      {form.contractStatus !== "Active" && <>
+        <Inp label="Fecha de cancelación" value={form.cancelDate} onChange={setF("cancelDate")} type="date" />
+        <Inp label="Motivo de cancelación" value={form.cancelReason} onChange={setF("cancelReason")} />
+      </>}
+      <Inp label="Gestor asignado" value={form.assignedGestor} onChange={setF("assignedGestor")} opts={[{ v: "", l: "Sin asignar" }, ...gestors.map(g => ({ v: String(g.id), l: g.name }))]} />
+    </div>
+
+    {/* ─── SECCIÓN 2: TITULAR ─── */}
+    <SectionTitle n="2" t="Titular y Co-titular" />
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+      <div><Inp label="Nombre completo del titular *" value={form.name} onChange={setF("name")} /><Err k="name" /></div>
+      <Inp label="Co-titular (opcional)" value={form.coHolder} onChange={setF("coHolder")} />
+    </div>
+
+    {/* ─── SECCIÓN 3: PUNTOS ─── */}
+    <SectionTitle n="3" t="Puntos del Contrato" sub="Los puntos anuales se calculan automáticamente: Puntos totales ÷ Plazo" />
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10 }}>
+      <div><Inp label="Puntos totales del contrato *" value={form.totalPoints} onChange={setF("totalPoints")} type="number" /><Err k="totalPoints" /></div>
+      <div><Inp label="Primer año de uso *" value={form.firstUseYear} onChange={setF("firstUseYear")} type="number" /><Err k="firstUseYear" /></div>
+      <div style={{ background: BG3, borderRadius: 8, padding: "10px 12px" }}>
+        <div style={{ fontSize: 9, color: T4, textTransform: "uppercase", marginBottom: 3 }}>Pts / año (calculado)</div>
+        <div style={{ color: B, fontWeight: 800, fontSize: 20 }}>{calcAnnualPts.toLocaleString()}</div>
+        <div style={{ fontSize: 9, color: T4 }}>{form.totalPoints} ÷ {form.contractYears} años</div>
+      </div>
+      <Inp label="Puntos usados a la fecha" value={form.pointsUsedToDate} onChange={setF("pointsUsedToDate")} type="number" />
+    </div>
+
+    {/* ─── SECCIÓN 4: MANTENIMIENTO ─── */}
+    <SectionTitle n="4" t="Estado de Mantenimiento" sub="El sistema calculará automáticamente los años sin pagar desde el último pagado" />
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+      <div>
+        <Inp label="Último año de mantenimiento pagado" value={form.lastPaidMaintYear} onChange={setF("lastPaidMaintYear")} type="number" />
+        <div style={{ fontSize: 9, color: T4, marginTop: 3 }}>
+          Ej. si pagó hasta 2023, el sistema marcará 2024, 2025, 2026 como pendientes.
+        </div>
+      </div>
+      {form.lastPaidMaintYear && pendingYears > 0 && <div style={{ background: pendingYears > 3 ? R + "12" : Y + "12", border: `1px solid ${pendingYears > 3 ? R : Y}33`, borderRadius: 8, padding: "10px 12px" }}>
+        <div style={{ fontSize: 9, color: pendingYears > 3 ? R : Y, textTransform: "uppercase", marginBottom: 3 }}>Años pendientes de pago</div>
+        <div style={{ color: pendingYears > 3 ? R : Y, fontWeight: 800, fontSize: 22 }}>{pendingYears} año{pendingYears !== 1 ? "s" : ""}</div>
+        <div style={{ fontSize: 10, color: T3 }}>{firstUnpaidYear} – {CY_NOW} · ~{fUSD(pendingAmountUSD)} a precio actual</div>
+        <div style={{ fontSize: 9, color: T4, marginTop: 3 }}>Desde {firstUnpaidYear} hasta {CY_NOW} inclusive</div>
+      </div>}
+      {form.lastPaidMaintYear && pendingYears === 0 && <div style={{ background: G + "12", border: `1px solid ${G}33`, borderRadius: 8, padding: "10px 12px" }}>
+        <div style={{ color: G, fontWeight: 700, fontSize: 12 }}>✓ Al corriente</div>
+        <div style={{ fontSize: 10, color: T3 }}>Mantenimiento pagado hasta {form.lastPaidMaintYear}</div>
+      </div>}
+    </div>
+
+    {/* ─── SECCIÓN 5: PUNTOS DISPONIBLES VIGENTES ─── */}
+    <SectionTitle n="5" t="Puntos Disponibles Vigentes" sub="Si el socio tiene puntos actualmente disponibles para usar (ya pagados, no vencidos)" />
+    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+      <label style={{ fontSize: 11, color: T2, display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+        <input type="checkbox" checked={form.hasAvailablePoints} onChange={e => setF("hasAvailablePoints")(e.target.checked)} />
+        Este socio tiene puntos vigentes disponibles para reservaciones
+      </label>
+    </div>
+    {form.hasAvailablePoints && <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, background: BG3, borderRadius: 8, padding: 12 }}>
+      <Inp label="Puntos disponibles actualmente" value={form.availPts} onChange={setF("availPts")} type="number" />
+      <Inp label="Vencen el" value={form.availExpiry} onChange={setF("availExpiry")} type="date" />
+      <Inp label="Año de mantenimiento al que corresponden" value={form.availMaintYear} onChange={setF("availMaintYear")} type="number" />
+    </div>}
+
+    {/* ─── SECCIÓN 6: CONTACTO ─── */}
+    <SectionTitle n="6" t="Teléfonos" />
+    {phones.map((p, i) => (<div key={i} style={{ display: "grid", gridTemplateColumns: "150px 1fr auto", gap: 8, marginBottom: 6 }}>
+      <Inp label="Etiqueta" value={p.label} onChange={v => updateRow(setPhones, i, 'label', v)} />
+      <Inp label="Número" value={p.number} onChange={v => updateRow(setPhones, i, 'number', v)} />
+      {i > 0 && <div style={{ paddingTop: 18 }}><Btn label="✕" variant="danger" small onClick={() => removeRow(setPhones, i)} /></div>}
+    </div>))}
+    <Btn label="+ Agregar teléfono" variant="ghost" small onClick={() => addRow(setPhones)} />
+
+    <SectionTitle n="7" t="Correos Electrónicos" />
+    {emails.map((e, i) => (<div key={i} style={{ display: "grid", gridTemplateColumns: "150px 1fr auto", gap: 8, marginBottom: 6 }}>
+      <Inp label="Etiqueta" value={e.label} onChange={v => updateRow(setEmails, i, 'label', v)} />
+      <Inp label="Correo" value={e.email} onChange={v => updateRow(setEmails, i, 'email', v)} />
+      {i > 0 && <div style={{ paddingTop: 18 }}><Btn label="✕" variant="danger" small onClick={() => removeRow(setEmails, i)} /></div>}
+    </div>))}
+    <Btn label="+ Agregar correo" variant="ghost" small onClick={() => addRow(setEmails)} />
+
+    <SectionTitle n="8" t="Direcciones" />
+    {addresses.map((a, i) => (<div key={i} style={{ display: "grid", gridTemplateColumns: "150px 1fr auto", gap: 8, marginBottom: 6 }}>
+      <Inp label="Etiqueta" value={a.label} onChange={v => updateRow(setAddresses, i, 'label', v)} />
+      <Inp label="Dirección" value={a.address} onChange={v => updateRow(setAddresses, i, 'address', v)} />
+      {i > 0 && <div style={{ paddingTop: 18 }}><Btn label="✕" variant="danger" small onClick={() => removeRow(setAddresses, i)} /></div>}
+    </div>))}
+    <Btn label="+ Agregar dirección" variant="ghost" small onClick={() => addRow(setAddresses)} />
+
+    <SectionTitle n="9" t="Comentarios Importantes" sub="Notas relevantes del historial del socio" />
+    {comments.map((c, i) => (<div key={i} style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 8, marginBottom: 6 }}>
+      <textarea value={c.text} onChange={e => updateRow(setComments, i, 'text', e.target.value)}
+        placeholder="Escribe un comentario o nota importante sobre este socio..."
+        rows={2} style={{ ...IS, resize: "vertical", fontSize: 11 }} />
+      {i > 0 && <div><Btn label="✕" variant="danger" small onClick={() => removeRow(setComments, i)} /></div>}
+    </div>))}
+    <Btn label="+ Agregar comentario" variant="ghost" small onClick={() => addRow(setComments)} />
+
+    {/* ─── RESUMEN ANTES DE GUARDAR ─── */}
+    {form.contractNo && form.name && form.totalPoints > 0 && <div style={{ background: BG2, border: `1px solid ${B}33`, borderRadius: 10, padding: 16, marginTop: 20 }}>
+      <div style={{ fontSize: 11, color: T3, textTransform: "uppercase", fontWeight: 700, marginBottom: 10 }}>Resumen del contrato a dar de alta</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10 }}>
+        {[
+          ["Contrato", form.contractNo, B],
+          ["Titular", form.name, T1],
+          ["Pts totales", (+form.totalPoints).toLocaleString(), P],
+          ["Pts/año", calcAnnualPts.toLocaleString(), G],
+          ["1er año uso", form.firstUseYear, T2],
+          ["Último mant.", form.lastPaidMaintYear || "—", pendingYears > 0 ? R : G],
+          ["Años pend.", pendingYears || "Ninguno", pendingYears > 0 ? R : G],
+          ["Estado", form.contractStatus, form.contractStatus === "Active" ? G : R],
+        ].map(([l, v, c]) => (<div key={l} style={{ background: BG3, borderRadius: 6, padding: "8px 10px" }}>
+          <div style={{ fontSize: 9, color: T4, textTransform: "uppercase", marginBottom: 2 }}>{l}</div>
+          <div style={{ color: c, fontWeight: 700, fontSize: 13 }}>{v}</div>
+        </div>))}
+      </div>
+    </div>}
+
+    {/* Errores de validación */}
+    {Object.keys(errors).length > 0 && <div style={{ background: R + "12", border: `1px solid ${R}44`, borderRadius: 8, padding: "10px 14px", marginTop: 14 }}>
+      <div style={{ color: R, fontWeight: 700, marginBottom: 5 }}>Por favor corrige los siguientes campos:</div>
+      {Object.entries(errors).map(([k, v]) => <div key={k} style={{ color: R, fontSize: 11 }}>• {k}: {v}</div>)}
+    </div>}
+
+    <div style={{ display: "flex", gap: 10, marginTop: 20, paddingTop: 16, borderTop: `1px solid ${BD}` }}>
+      <Btn label="Limpiar formulario" variant="ghost" onClick={() => { setForm(emptyForm()); setErrors({}); setSaved(null); }} />
+      <Btn label={saving ? "Guardando..." : "⊕ Dar de Alta Contrato"} variant="success" disabled={saving} onClick={handleSave} />
+    </div>
+  </div>);
+}
 // ── APP ROOT ─────────────────────────────────────────────────────────────────
 const MONTHS_ES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 export default function App() {
@@ -3863,6 +4139,19 @@ export default function App() {
     }
   };
 
+  // Alta de contrato preexistente (migración)
+  const saveLegacyClient = async (contract, phones, emails, addresses, comments, availablePoints) => {
+    try {
+      const dbUser = users.find(u => u.username === cu?.username);
+      const result = await insertLegacyClient(contract, phones, emails, addresses, comments, availablePoints, dbUser?.id || null);
+      await loadAll();
+      return result;
+    } catch (e) {
+      console.error('Error dando de alta contrato:', e);
+      throw e;
+    }
+  };
+
   const login = u => { setCu(u); setTab(RT[u.role][0]); };
   const logout = () => { setCu(null); setTab(null); setClients([]); setPayments([]); };
 
@@ -3938,8 +4227,9 @@ export default function App() {
         {tab === "contracts" && <ContractsView clients={clients} setClients={setClients} />}
         {tab === "courtesies" && <CourtesiesView clients={clients} setClients={setClients} courtesies={courtesies} setCourtesies={setCourtesies} pp={pp} cu={cu} users={users} onSaveCourtesy={saveCourtesy} />}
         {tab === "special" && <SpecialMgmtView clients={clients} payments={payments} condonations={condonations} setCondonations={setCondonations} cu={cu} users={users} pp={pp} onSaveCondonation={saveCondonation} onSaveRecoveredPoints={saveRecoveredPoints} />}
+        {tab === "legacy" && <LegacyContractView cu={cu} users={users} onSave={saveLegacyClient} />}
         {tab === "ec" && <MyAccountView cu={cu} users={users} payments={payments} pms={pms} fxRate={fxRate} cr={cr} />}
-        {tab === "ps" && <PointSalesView clients={clients} setClients={setClients} payments={payments} setPayments={setPayments} pp={pp} pms={pms} cu={cu} pendingSales={pendingSales} setPendingSales={setPendingSales} onSavePointSale={savePointSale} />}
+        {tab === "ps" && <PointSalesView clients={clients} setClients={setClients} payments={payments} setPayments={setPayments} pp={pp} pms={pms} cu={cu} pendingSales={pendingSales} setPendingSales={setPendingSales} onSavePointSale={savePointSale} pointPrices={pointPrices} fxRate={fxRate} />}
       </div>
     </div>
   </div>);
