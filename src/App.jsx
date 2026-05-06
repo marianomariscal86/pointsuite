@@ -2136,6 +2136,69 @@ function PpEditor({ pp, setPp, onSavePricePerPoint }) {
   </div>);
 }
 
+// ── SEASON ROW — componente separado para evitar useState dentro de .map() ────
+const MONTHS_CONF = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
+function SeasonRow({ meta, editU, setEditU, saveSeasonRange, removeSeasonRange }) {
+  const s = (editU.seasons || []).find(x => (x.season || x.id) === meta.id);
+  const [editing, setEditing] = useState(false);
+  const [sForm, setSForm] = useState({ sm: s?.start_month || 1, sd: s?.start_day || 1, em: s?.end_month || 12, ed: s?.end_day || 31, wd: s?.pts_weekday || 0, we: s?.pts_weekend || 0 });
+  // Sync if s changes
+  useEffect(() => {
+    if (s) setSForm({ sm: s.start_month, sd: s.start_day, em: s.end_month, ed: s.end_day, wd: s.pts_weekday || 0, we: s.pts_weekend || 0 });
+  }, [s?.start_month, s?.end_month, s?.pts_weekday]);
+  return (<div style={{ background: BG3, border: `1px solid ${meta.color}33`, borderRadius: 8, padding: "10px 12px", marginBottom: 8, borderLeft: `3px solid ${meta.color}` }}>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: editing ? 10 : 0 }}>
+      <div>
+        <span style={{ color: meta.color, fontWeight: 700, fontSize: 12 }}>{meta.name}</span>
+        {s && !editing && <span style={{ color: T4, fontSize: 10, marginLeft: 8 }}>{MONTHS_CONF[s.start_month-1]} {s.start_day} — {MONTHS_CONF[s.end_month-1]} {s.end_day} · Dom-Jue: {s.pts_weekday}pts · Vie-Sáb: {s.pts_weekend}pts</span>}
+        {!s && !editing && <span style={{ color: T4, fontSize: 10, marginLeft: 8 }}>(no configurada — usará <span style={{ color: "#fbbf24" }}>Oro</span> como default)</span>}
+      </div>
+      <div style={{ display: "flex", gap: 5 }}>
+        <Btn label={editing ? "Cancelar" : s ? "Editar" : "+ Agregar"} variant="ghost" small onClick={() => setEditing(e => !e)} />
+        {s && !editing && <Btn label="Quitar" variant="danger" small onClick={() => {
+          if (s.id && s.id < 1e9 && removeSeasonRange) removeSeasonRange(s.id);
+          setEditU(u => ({ ...u, seasons: u.seasons.filter(x => (x.season || x.id) !== meta.id) }));
+        }} />}
+      </div>
+    </div>
+    {editing && <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr 1fr", gap: 8 }}>
+      <Inp label="Inicio Mes" value={sForm.sm} onChange={v => setSForm(f => ({ ...f, sm: +v }))} opts={MONTHS_CONF.map((m, i) => ({ v: i+1, l: m }))} />
+      <Inp label="Inicio Día" value={sForm.sd} onChange={v => setSForm(f => ({ ...f, sd: +v }))} type="number" />
+      <Inp label="Fin Mes" value={sForm.em} onChange={v => setSForm(f => ({ ...f, em: +v }))} opts={MONTHS_CONF.map((m, i) => ({ v: i+1, l: m }))} />
+      <Inp label="Fin Día" value={sForm.ed} onChange={v => setSForm(f => ({ ...f, ed: +v }))} type="number" />
+      <Inp label="Pts Dom-Jue" value={sForm.wd} onChange={v => setSForm(f => ({ ...f, wd: +v }))} type="number" />
+      <Inp label="Pts Vie-Sáb" value={sForm.we} onChange={v => setSForm(f => ({ ...f, we: +v }))} type="number" />
+      <div style={{ gridColumn: "1/-1", display: "flex", justifyContent: "flex-end" }}>
+        <Btn label="Guardar temporada" variant="success" small onClick={() => {
+          const newS = { id: s?.id || Date.now(), season: meta.id, start_month: sForm.sm, start_day: sForm.sd, end_month: sForm.em, end_day: sForm.ed, pts_weekday: sForm.wd, pts_weekend: sForm.we };
+          setEditU(u => ({ ...u, seasons: [...(u.seasons || []).filter(x => (x.season || x.id) !== meta.id), newS] }));
+          if (saveSeasonRange) saveSeasonRange(editU.id, meta.id, sForm.sm, sForm.sd, sForm.em, sForm.ed, sForm.wd, sForm.we);
+          setEditing(false);
+        }} />
+      </div>
+    </div>}
+  </div>);
+}
+
+// ── PRICE YEAR ROW — componente separado para evitar useState dentro de .map() ─
+function PriceYearRow({ yr, pointPrices, savePointPrice, canEdit, pp }) {
+  const cur = (pointPrices || []).find(p => p.year === yr);
+  const currentPrice = cur?.priceUsd || 4.75;
+  const [draft, setDraft] = useState(currentPrice);
+  useEffect(() => { setDraft(cur?.priceUsd || 4.75); }, [cur?.priceUsd]);
+  const dirty = +draft !== +currentPrice;
+  return (<div style={{ display: "flex", gap: 10, alignItems: "flex-end", marginBottom: 10, padding: "10px 12px", background: BG3, borderRadius: 8 }}>
+    <div style={{ flex: 1 }}>
+      <div style={{ fontSize: 9, color: T4, marginBottom: 3 }}>{yr === CY ? "Año en curso" : "Año siguiente"} — {yr}</div>
+      <input type="number" value={draft} min={2} step={0.01} onChange={e => setDraft(+e.target.value)} style={{ ...IS, fontSize: 13, fontWeight: 700, width: 100 }} />
+      <span style={{ fontSize: 10, color: T4, marginLeft: 6 }}>USD/pt · {f$(draft * (yr <= CY ? 1 : 1))}/pt</span>
+    </div>
+    <div style={{ color: B, fontWeight: 800, fontSize: 18 }}>{f$(currentPrice)}</div>
+    {dirty && +draft >= 2 && canEdit && <Btn label="Aplicar" variant="success" onClick={() => savePointPrice && savePointPrice(yr, +draft)} />}
+    {dirty && +draft < 2 && <div style={{ color: R, fontSize: 10 }}>Mín. $2.00 USD</div>}
+  </div>);
+}
+
 function ConfigView({ seasonOrder, setSeasonOrder, uts, setUts, units, setUnits, pp, setPp, onSaveUnit, onSaveUnitType, onRemoveUnitType, onSavePricePerPoint, pointPrices, savePointPrice, saveUnitAvailability, removeUnitAvailability, saveSeasonRange, removeSeasonRange, cu }) {
   const canEdit = cu && ["admin", "superadmin"].includes(cu.role);
   const [sec, setSec] = useState("tarifa"), [editUT, setEditUT] = useState(null), [editU, setEditU] = useState(null);
@@ -2164,23 +2227,9 @@ function ConfigView({ seasonOrder, setSeasonOrder, uts, setUts, units, setUnits,
       <div style={{ background: BG2, border: `1px solid ${BD}`, borderRadius: 11, padding: 18, marginBottom: 14 }}>
         <Sec t="Precio por punto — Años modificables" />
         <div style={{ fontSize: 10, color: T4, marginBottom: 12 }}>Solo se puede modificar el precio del año en curso ({CY}) y el siguiente ({CY + 1}). Los años anteriores están fijos en $4.75 USD.</div>
-        {[CY, CY + 1].map(yr => {
-          const cur = (pointPrices || []).find(p => p.year === yr);
-          const currentPrice = cur?.priceUsd || 4.75;
-          const [draft, setDraft] = useState(currentPrice);
-          useEffect(() => { setDraft(cur?.priceUsd || 4.75); }, [cur?.priceUsd]);
-          const dirty = +draft !== +currentPrice;
-          return (<div key={yr} style={{ display: "flex", gap: 10, alignItems: "flex-end", marginBottom: 10, padding: "10px 12px", background: BG3, borderRadius: 8 }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 9, color: T4, marginBottom: 3 }}>{yr === CY ? "Año en curso" : "Año siguiente"} — {yr}</div>
-              <input type="number" value={draft} min={2} step={0.01} onChange={e => setDraft(+e.target.value)} style={{ ...IS, fontSize: 13, fontWeight: 700, width: 100 }} />
-              <span style={{ fontSize: 10, color: T4, marginLeft: 6 }}>USD/pt</span>
-            </div>
-            <div style={{ color: B, fontWeight: 800, fontSize: 18 }}>{f$(currentPrice)}</div>
-            {dirty && +draft >= 2 && canEdit && <Btn label="Aplicar" variant="success" onClick={() => savePointPrice && savePointPrice(yr, +draft)} />}
-            {dirty && +draft < 2 && <div style={{ color: R, fontSize: 10 }}>Mín. $2.00 USD</div>}
-          </div>);
-        })}
+        {[CY, CY + 1].map(yr => (
+          <PriceYearRow key={yr} yr={yr} pointPrices={pointPrices} savePointPrice={savePointPrice} canEdit={canEdit} pp={pp} />
+        ))}
         <div style={{ background: BG3, borderRadius: 6, padding: "7px 9px", fontSize: 10, color: T4, marginTop: 8 }}>
           Años anteriores a {CY}: precio fijo $4.75 USD/pt · Ejemplo 5,000 pts → <b style={{ color: T1 }}>{f$(5000 * pp)}</b>
         </div>
@@ -2268,41 +2317,9 @@ function ConfigView({ seasonOrder, setSeasonOrder, uts, setUts, units, setUnits,
         {/* Temporadas */}
         <div style={{ fontSize: 9, color: T4, textTransform: "uppercase", letterSpacing: ".1em", marginBottom: 8, marginTop: 14 }}>Temporadas · Rangos de fechas y puntos por noche</div>
         <div style={{ fontSize: 9, color: T4, marginBottom: 8 }}>Si una fecha no está en ningún rango, se usará <b style={{ color: "#fbbf24" }}>Oro</b> como temporada default. Si hay solapamiento, se aplica la temporada más alta (Platino {'>'} Oro {'>'} Plata).</div>
-        {SEASON_META.map(meta => {
-          const s = (editU.seasons || []).find(x => (x.season || x.id) === meta.id);
-          const [editing, setEditing] = useState(false);
-          const [sForm, setSForm] = useState(s ? { sm: s.start_month, sd: s.start_day, em: s.end_month, ed: s.end_day, wd: s.pts_weekday || 0, we: s.pts_weekend || 0 } : { sm: 1, sd: 1, em: 12, ed: 31, wd: 0, we: 0 });
-          const MONTHS = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
-          return (<div key={meta.id} style={{ background: BG3, border: `1px solid ${meta.color}33`, borderRadius: 8, padding: "10px 12px", marginBottom: 8, borderLeft: `3px solid ${meta.color}` }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: editing ? 10 : 0 }}>
-              <div>
-                <span style={{ color: meta.color, fontWeight: 700, fontSize: 12 }}>{meta.name}</span>
-                {s && !editing && <span style={{ color: T4, fontSize: 10, marginLeft: 8 }}>{MONTHS[s.start_month-1]} {s.start_day} — {MONTHS[s.end_month-1]} {s.end_day} · Dom-Jue: {s.pts_weekday}pts · Vie-Sáb: {s.pts_weekend}pts</span>}
-                {!s && !editing && <span style={{ color: T4, fontSize: 10, marginLeft: 8 }}>(no configurada — usará oro como default)</span>}
-              </div>
-              <div style={{ display: "flex", gap: 5 }}>
-                <Btn label={editing ? "Cancelar" : s ? "Editar" : "+ Agregar"} variant="ghost" small onClick={() => setEditing(!editing)} />
-                {s && !editing && <Btn label="Quitar" variant="danger" small onClick={() => { if (s.id && s.id < 1e9 && removeSeasonRange) removeSeasonRange(s.id); setEditU(u => ({ ...u, seasons: u.seasons.filter(x => (x.season || x.id) !== meta.id) })); }} />}
-              </div>
-            </div>
-            {editing && <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr 1fr", gap: 8 }}>
-              <Inp label="Inicio Mes" value={sForm.sm} onChange={v => setSForm(f => ({ ...f, sm: +v }))} opts={MONTHS.map((m, i) => ({ v: i+1, l: m }))} />
-              <Inp label="Inicio Día" value={sForm.sd} onChange={v => setSForm(f => ({ ...f, sd: +v }))} type="number" />
-              <Inp label="Fin Mes" value={sForm.em} onChange={v => setSForm(f => ({ ...f, em: +v }))} opts={MONTHS.map((m, i) => ({ v: i+1, l: m }))} />
-              <Inp label="Fin Día" value={sForm.ed} onChange={v => setSForm(f => ({ ...f, ed: +v }))} type="number" />
-              <Inp label="Pts Dom-Jue" value={sForm.wd} onChange={v => setSForm(f => ({ ...f, wd: +v }))} type="number" />
-              <Inp label="Pts Vie-Sáb" value={sForm.we} onChange={v => setSForm(f => ({ ...f, we: +v }))} type="number" />
-              <div style={{ gridColumn: "1/-1", display: "flex", justifyContent: "flex-end" }}>
-                <Btn label="Guardar temporada" variant="success" small onClick={() => {
-                  const newS = { id: s?.id || Date.now(), season: meta.id, start_month: sForm.sm, start_day: sForm.sd, end_month: sForm.em, end_day: sForm.ed, pts_weekday: sForm.wd, pts_weekend: sForm.we };
-                  setEditU(u => ({ ...u, seasons: [...(u.seasons || []).filter(x => (x.season || x.id) !== meta.id), newS] }));
-                  if (saveSeasonRange) saveSeasonRange(editU.id, meta.id, sForm.sm, sForm.sd, sForm.em, sForm.ed, sForm.wd, sForm.we);
-                  setEditing(false);
-                }} />
-              </div>
-            </div>}
-          </div>);
-        })}
+        {SEASON_META.map(meta => (
+          <SeasonRow key={meta.id} meta={meta} editU={editU} setEditU={setEditU} saveSeasonRange={saveSeasonRange} removeSeasonRange={removeSeasonRange} />
+        ))}
 
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
           <Btn label="Cancelar" variant="ghost" onClick={() => setEditU(null)} />
