@@ -50,9 +50,12 @@ function mapClient(c) {
     id: c.id,
     contractNo: c.contract_no,
     name: c.full_name,
+    coHolder: c.co_holder || '',
     contractDate: c.contract_date,
     contractYears: c.contract_years,
     yearsElapsed: c.years_elapsed,
+    firstUseYear: c.first_use_year || null,
+    lastPaidMaintYear: c.last_paid_maint_year || null,
     totalPoints: c.total_points,
     pointsUsedToDate: c.points_used_to_date,
     annualPoints: c.annual_points,
@@ -487,9 +490,12 @@ export async function insertClient(c) {
   const dbFields = {
     contract_no: c.contractNo,
     full_name: c.name,
+    co_holder: c.coHolder || null,
     contract_date: c.contractDate || null,
     contract_years: c.contractYears || 10,
     years_elapsed: c.yearsElapsed || 0,
+    first_use_year: c.firstUseYear || null,
+    last_paid_maint_year: c.lastPaidMaintYear || null,
     total_points: c.totalPoints || 0,
     points_used_to_date: c.pointsUsedToDate || 0,
     annual_points: c.annualPoints || 0,
@@ -506,6 +512,76 @@ export async function insertClient(c) {
     .select().single();
   if (error) throw error;
   return data;
+}
+
+// Alta completa de contrato preexistente con todos sus datos de contacto
+export async function insertLegacyClient(c, phones, emails, addresses, comments, availablePoints, authorId) {
+  // 1. Insertar cliente
+  const dbFields = {
+    contract_no: c.contractNo,
+    full_name: c.name,
+    co_holder: c.coHolder || null,
+    contract_date: c.contractDate || null,
+    contract_years: c.contractYears || 10,
+    years_elapsed: c.yearsElapsed || 0,
+    first_use_year: c.firstUseYear || null,
+    last_paid_maint_year: c.lastPaidMaintYear || null,
+    total_points: c.totalPoints || 0,
+    points_used_to_date: c.pointsUsedToDate || 0,
+    annual_points: c.annualPoints || 0,
+    paid_points: 0,
+    balance_usd: 0,
+    due_date: c.dueDate || null,
+    account_status: 'Active',
+    contract_status: c.contractStatus || 'Active',
+    assigned_gestor_id: c.assignedGestor ? +c.assignedGestor : null,
+    cancel_date: c.cancelDate || null,
+    cancel_reason: c.cancelReason || null,
+  };
+  const { data: newClient, error } = await supabase
+    .from('clients').insert([dbFields]).select().single();
+  if (error) throw error;
+  const clientId = newClient.id;
+
+  // 2. Insertar teléfonos
+  for (const p of (phones || [])) {
+    if (!p.number?.trim()) continue;
+    await supabase.from('client_phones').insert([{ client_id: clientId, label: p.label || 'Casa', phone: p.number.trim(), is_active: true }]);
+  }
+
+  // 3. Insertar correos
+  for (const e of (emails || [])) {
+    if (!e.email?.trim()) continue;
+    await supabase.from('client_emails').insert([{ client_id: clientId, label: e.label || 'Personal', email: e.email.trim(), is_active: true }]);
+  }
+
+  // 4. Insertar direcciones
+  for (const a of (addresses || [])) {
+    if (!a.address?.trim()) continue;
+    await supabase.from('client_addresses').insert([{ client_id: clientId, label: a.label || 'Casa', address: a.address.trim(), is_active: true }]);
+  }
+
+  // 5. Insertar comentarios iniciales
+  for (const cm of (comments || [])) {
+    if (!cm.text?.trim()) continue;
+    await supabase.from('client_comments').insert([{ client_id: clientId, body: cm.text.trim(), author_id: authorId, created_at: new Date().toISOString() }]);
+  }
+
+  // 6. Insertar puntos disponibles actuales en client_saved_points si los tienen
+  if (availablePoints && availablePoints.points > 0 && availablePoints.expiryDate) {
+    await supabase.from('client_saved_points').insert([{
+      client_id: clientId,
+      points: availablePoints.points,
+      expiry_date: availablePoints.expiryDate,
+      maint_year: availablePoints.maintYear || null,
+      year_origin: availablePoints.maintYear || null,
+      saved_by: authorId,
+      saved_at: new Date().toISOString(),
+      note: '[MIGRACIÓN] Puntos vigentes al momento del alta en sistema',
+    }]);
+  }
+
+  return newClient;
 }
 
 // ─── PHONES / EMAILS / ADDRESSES / COMMENTS ────────────────
@@ -571,9 +647,12 @@ export async function insertClientComment(clientId, body, authorId) {
 
 // ─── VENTA DE PUNTOS ──────────────────────────────────────
 export async function insertPointSale(s, submittedById) {
-  // Columns: id, client_id, submitted_by, validated_by, sale_type, points_to_add,
-  // price_usd, total_mxn, new_total_points, new_annual_points, new_contract_years,
-  // payment_id, status, submitted_at, validated_at, note
+  // price_usd = precio por punto (nunca 0 por constraint BD)
+  const priceUsd = s.pricePerPt
+    ? Math.max(2, parseFloat(s.pricePerPt))
+    : s.pts > 0 && s.totalUsd > 0
+      ? parseFloat(s.totalUsd) / parseInt(s.pts)
+      : 4.75; // default si no viene precio
   const { data, error } = await supabase
     .from('point_sales')
     .insert([{
@@ -582,7 +661,7 @@ export async function insertPointSale(s, submittedById) {
       validated_by: submittedById,
       sale_type: s.stype || 'points',
       points_to_add: s.pts || 0,
-      price_usd: s.totalUsd || 0,
+      price_usd: priceUsd,
       total_mxn: s.totalMxn || 0,
       new_total_points: s.newTotalPoints || null,
       new_annual_points: s.newAnnualPoints || null,
