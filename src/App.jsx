@@ -21,6 +21,9 @@ import {
   cancelClientContract,
   insertCourtesy, fetchCourtesies,
   fetchCondonations, insertCondonation,
+  fetchPointPrices, upsertPointPrice, getPriceForYear,
+  fetchUnitAvailability, insertUnitAvailability, updateUnitAvailability, deleteUnitAvailability, getAvailableRooms,
+  upsertUnitSeasonRange, deleteUnitSeasonRange,
 } from './lib/db.js';
 const BG = "#030912", BG2 = "#060d19", BG3 = "#0b1628", BD = "#18263d";
 const T1 = "#e2e8f0", T2 = "#8aa8c0", T3 = "#2e4a66", T4 = "#1e3558", T5 = "#2d4563"; // Corregido: T5 definido aquí
@@ -138,11 +141,38 @@ function getClientStatus(client, payments, condonations) {
 }
 function calcAP(tot, used, yr) { const r = Math.max(0, tot - (used || 0)); return yr <= 1 ? r : Math.ceil(r / yr); }
 // calcPts: recibe la unidad con sus seasons y el id de la temporada detectada
-function calcPts(unit, seasonId, isWe) { if (!unit || !seasonId) return 0; const s = (unit.seasons || []).find(x => x.id === seasonId); if (!s) return 0; return isWe ? s.ptsWe : s.ptsWd; }
+function calcPts(unit, seasonId, isWe) {
+  if (!unit || !seasonId) return 0;
+  const s = (unit.seasons || []).find(x => (x.season || x.id) === seasonId);
+  if (!s) return 0;
+  return isWe ? (s.pts_weekend || s.ptsWe || 0) : (s.pts_weekday || s.ptsWd || 0);
+}
 // Helper: dado una fecha y un rango {startMonth,startDay,endMonth,endDay}, verifica si la fecha cae en el rango
-function inRange(date, r) { const m = date.getMonth() + 1, dy = date.getDate(); if (r.startMonth <= r.endMonth) return (m > r.startMonth || (m === r.startMonth && dy >= r.startDay)) && (m < r.endMonth || (m === r.endMonth && dy <= r.endDay)); return (m > r.startMonth || (m === r.startMonth && dy >= r.startDay)) || (m < r.endMonth || (m === r.endMonth && dy <= r.endDay)); }
-// detS: dado fecha y unidad, encuentra la temporada de esa unidad que cubre esa fecha
-function detS(ds, unit) { if (!ds || !unit) return null; const d = new Date(ds); const s = (unit.seasons || []).find(s => (s.ranges || []).some(r => inRange(d, r))); if (!s) return null; return { ...s, ...SEASON_META.find(m => m.id === s.id) }; }
+const SEASON_ORDER_PRIORITY = ["platino", "oro", "plata"];
+function inRange(date, r) {
+  const m = date.getMonth() + 1, dy = date.getDate();
+  const sm = r.start_month || r.startMonth || r.sm, sd = r.start_day || r.startDay || r.sd;
+  const em = r.end_month || r.endMonth || r.em, ed = r.end_day || r.endDay || r.ed;
+  if (!sm) return false;
+  if (sm <= em) return (m > sm || (m === sm && dy >= sd)) && (m < em || (m === em && dy <= ed));
+  return (m > sm || (m === sm && dy >= sd)) || (m < em || (m === em && dy <= ed));
+}
+// detS: dado fecha y unidad, encuentra la temporada de mayor prioridad que cubre esa fecha.
+// Si no hay ninguna asignada, retorna oro como default.
+function detS(ds, unit) {
+  if (!ds || !unit) return { id: "oro", season: "oro", ...SEASON_META.find(m => m.id === "oro") };
+  const d = new Date(ds + "T12:00:00");
+  const seasons = unit.seasons || [];
+  const matching = seasons.filter(s => inRange(d, s));
+  if (matching.length === 0) return { id: "oro", season: "oro", ...SEASON_META.find(m => m.id === "oro"), pts_weekday: 0, pts_weekend: 0 };
+  matching.sort((a, b) =>
+    SEASON_ORDER_PRIORITY.indexOf(a.season || a.id || "") - SEASON_ORDER_PRIORITY.indexOf(b.season || b.id || "")
+  );
+  const best = matching[0];
+  const sId = best.season || best.id || "oro";
+  const meta = SEASON_META.find(m => m.id === sId) || SEASON_META[1];
+  return { ...best, ...meta, id: sId };
+}
 const mkP = (label, number, active = true) => ({ label, number, active });
 const mkE = (label, email, active = true) => ({ label, email, active });
 const mkA = (label, text, active = true) => ({ label, text, active });
@@ -569,11 +599,24 @@ function CommentsPanel({ selC, cu, onAddComment }) {
 
 // ── CLIENTS VIEW ─────────────────────────────────────────────────────────────
 function ClientsView({ clients, setClients, pp, cu, payments, reservations, users, condonations, onGoToCashier, onGoToRes, onSaveClient, onAddPhone, onSetPhoneActive, onAddEmail, onSetEmailActive, onAddAddress, onSetAddressActive, onAddComment, onSaveSavedPoints }) {
-  const [srch, setSrch] = useState(""), [filt, setFilt] = useState("All"), [sel, setSel] = useState(null), [modal, setModal] = useState(null), [dtab, setDtab] = useState("info");
+  const [srch, setSrch] = useState(""), [filt, setFilt] = useState("All"), [sortByMora, setSortByMora] = useState(false), [sel, setSel] = useState(null), [modal, setModal] = useState(null), [dtab, setDtab] = useState("info");
   const [saveModal, setSaveModal] = useState(null);
   const canEdit = ["superadmin", "admin"].includes(cu.role);
   const en = useMemo(() => clients.map(c => { const d = dOvr(c.dueDate); const cl = getClientStatus(c, payments, condonations); const interest = cInt(c.balance, d, cl.r * 12); return { ...c, dOvr: d, cls: cl, interest, totalOwed: c.balance + interest, ph: (c.phones || []).find(p => p.active !== false)?.number || "—" }; }), [clients, payments, condonations]);
-  const filtered = useMemo(() => { const ql = srch.toLowerCase(); return en.filter(c => { const ms = !srch || c.name.toLowerCase().includes(ql) || c.contractNo.toLowerCase().includes(ql) || (c.phones || []).some(p => p.number.includes(srch)) || (c.emails || []).some(e => e.email.toLowerCase().includes(ql)); const mf = filt === "All" || c.status === filt || (filt === "Morosos" && c.balance > 0) || (filt === "Cancelados" && c.contractStatus !== "Active"); return ms && mf; }); }, [en, srch, filt]);
+  const filtered = useMemo(() => {
+    const ql = srch.toLowerCase();
+    // Para gestor: solo ver sus clientes asignados
+    const base = cu.role === "gestor"
+      ? en.filter(c => String(c.assignedGestor) === String(cu.id))
+      : en;
+    const result = base.filter(c => {
+      const ms = !srch || c.name.toLowerCase().includes(ql) || c.contractNo.toLowerCase().includes(ql) || (c.phones || []).some(p => p.number.includes(srch)) || (c.emails || []).some(e => e.email.toLowerCase().includes(ql));
+      const mf = filt === "All" || c.status === filt || (filt === "Morosos" && c.balance > 0) || (filt === "Cancelados" && c.contractStatus !== "Active");
+      return ms && mf;
+    });
+    if (sortByMora) result.sort((a, b) => b.totalOwed - a.totalOwed);
+    return result;
+  }, [en, srch, filt, sortByMora, cu]);
   const selC = en.find(c => c.id === sel);
   const canEditContract = cu && (cu.role === "admin" || cu.role === "superadmin");
   const save = f => {
@@ -597,6 +640,9 @@ function ClientsView({ clients, setClients, pp, cu, payments, reservations, user
       <div style={{ display: "flex", gap: 8, marginBottom: 11, flexWrap: "wrap" }}>
         <input placeholder="Nombre, Nº contrato, teléfono, email…" value={srch} onChange={e => setSrch(e.target.value)} style={{ ...IS, flex: 1, minWidth: 200 }} />
         <select value={filt} onChange={e => setFilt(e.target.value)} style={{ ...IS, width: 130 }}>{["All", "Active", "Partial", "Delinquent", "Morosos", "Cancelados"].map(s => <option key={s}>{s}</option>)}</select>
+        <button onClick={() => setSortByMora(m => !m)} style={{ background: sortByMora ? R + "22" : BG2, border: `1px solid ${sortByMora ? R : BD}`, color: sortByMora ? R : T4, borderRadius: 6, padding: "4px 10px", fontSize: 10, fontWeight: sortByMora ? 700 : 400, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>
+          {sortByMora ? "↓ Por Mora" : "Ordenar por Mora"}
+        </button>
         {canEdit && <Btn label="+ Nuevo" onClick={() => setModal("new")} />}
       </div>
       <Tbl cols={["Contrato", "Cliente", "Tel.", "Saldo", "Mora", "Vence", "Gestor", "Cto.", ""]}
@@ -1298,42 +1344,173 @@ function ConfDoc({ r, onClose }) {
   </Modal>);
 }
 function ResModal({ clients, units, uts, reservations, onSave, onClose, cu, rc, presel, payments, condonations }) {
-  const [sid, setSid] = useState(presel || null), [uid, setUid] = useState(units.filter(u => u.active)[0]?.id || ""), [ci, setCi] = useState(""), [co, setCo] = useState("");
-  const unit = units.find(u => u.id === +uid), ut = uts.find(t => t.id === unit?.typeId), client = clients.find(c => c.id === sid), season = detS(ci, unit);
-  const nights = ci && co ? Math.max(0, Math.round((new Date(co) - new Date(ci)) / 86400000)) : 0;
-  const totalPts = () => { if (!nights || !unit || !ci) return 0; let t = 0; for (let i = 0; i < nights; i++) { const d = new Date(ci); d.setDate(d.getDate() + i); const dw = d.getDay(); const s = detS(d.toISOString().split("T")[0], unit); if (!s) return 0; t += calcPts(unit, s.id, dw === 5 || dw === 6); } return t; };
-  const ptTotal = totalPts();
+  const [sid, setSid] = useState(presel || null);
+  const [uid, setUid] = useState("");
+  const [ci, setCi] = useState(""), [co, setCo] = useState("");
+  const [availCheck, setAvailCheck] = useState(null); // null | number (rooms available)
+  const [checking, setChecking] = useState(false);
+
+  const unit = units.find(u => u.id === +uid);
+  const ut = uts.find(t => t.id === unit?.typeId);
+  const client = clients.find(c => c.id === sid);
+  const DAYS_ES = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
+
+  // Para unidades semanales: ajustar check-in al día correcto
+  const handleCiChange = (val) => {
+    setCi(val); setCo(""); setAvailCheck(null);
+    if (unit?.isWeekly && val) {
+      const d = new Date(val + "T12:00:00");
+      const diff = (unit.weeklyStartDay - d.getDay() + 7) % 7;
+      if (diff !== 0) {
+        const adj = new Date(d); adj.setDate(adj.getDate() + diff);
+        setCi(adj.toISOString().split("T")[0]);
+      }
+      // Auto-set checkout 7 nights later
+      const co2 = new Date(d); co2.setDate(co2.getDate() + diff + 7);
+      setCo(co2.toISOString().split("T")[0]);
+    }
+  };
+
+  const nights = ci && co ? Math.max(0, Math.round((new Date(co + "T12:00:00") - new Date(ci + "T12:00:00")) / 86400000)) : 0;
+
+  // Validar mínimo de noches
+  const minNights = unit?.isWeekly ? 7 : 3;
+  const nightsOk = nights >= minNights;
+
+  // Calcular puntos totales
+  const ptTotal = (() => {
+    if (!nights || !unit || !ci || !nightsOk) return 0;
+    let t = 0;
+    for (let i = 0; i < nights; i++) {
+      const d = new Date(ci + "T12:00:00"); d.setDate(d.getDate() + i);
+      const dw = d.getDay();
+      const s = detS(d.toISOString().split("T")[0], unit);
+      t += calcPts(unit, s.id, dw === 5 || dw === 6);
+    }
+    return t;
+  })();
+
   const usedP = reservations.filter(r => r.clientId === sid && r.status === "Confirmed").reduce((a, r) => a + r.pointsUsed, 0);
   const savedA = client ? (client.savedPoints || []).filter(sp => new Date(sp.expiryDate) > new Date()).reduce((a, sp) => a + sp.points, 0) : 0;
   const avail = client ? client.paidPoints - usedP + savedA : 0;
-  const conflict = (unit?.occ || []).some(o => { const oi = new Date(o.ci), oo = new Date(o.co), ni = new Date(ci), no = new Date(co); return !(no <= oi || ni >= oo); });
-  // Morosidad real: hay años de mantenimiento sin pagar hasta el año actual
+
   const cls = client ? getClientStatus(client, payments, condonations) : null;
   const delinq = cls ? !["Al corriente", "Promoción Prepago"].includes(cls.l) : false;
-  const canBook = nights > 0 && client && ptTotal <= avail && unit && client.contractStatus === "Active" && !delinq && !conflict;
+
+  // Verificar disponibilidad en BD
+  const checkAvailability = async () => {
+    if (!unit || !ci || !co || !nightsOk) return;
+    setChecking(true);
+    try {
+      const rooms = await getAvailableRooms(unit.id, ci, co);
+      setAvailCheck(rooms);
+    } catch (e) { setAvailCheck(0); }
+    setChecking(false);
+  };
+
+  useEffect(() => { setAvailCheck(null); }, [uid, ci, co]);
+
+  // Disponibilidad en calendario: contar cuartos ocupados por fecha
+  const getOccupied = (dateStr) => {
+    if (!unit) return 0;
+    return reservations.filter(r => r.unitId === unit.id && r.status === "Confirmed" && r.checkIn <= dateStr && r.checkOut > dateStr).length;
+  };
+  const getTotalRooms = (dateStr) => {
+    if (!unit) return 0;
+    const avail = (unit.availability || []).find(a => a.startDate <= dateStr && a.endDate >= dateStr);
+    return avail ? avail.totalRooms : 0;
+  };
+
+  // Generar calendario del mes actual y siguiente
+  const calDates = (() => {
+    const dates = [];
+    const start = new Date(); start.setDate(1);
+    for (let m = 0; m < 2; m++) {
+      const mm = new Date(start.getFullYear(), start.getMonth() + m, 1);
+      const daysInMonth = new Date(mm.getFullYear(), mm.getMonth() + 1, 0).getDate();
+      for (let d = 1; d <= daysInMonth; d++) {
+        const ds = new Date(mm.getFullYear(), mm.getMonth(), d).toISOString().split("T")[0];
+        const total = getTotalRooms(ds);
+        const occ = getOccupied(ds);
+        const free = Math.max(0, total - occ);
+        const s = detS(ds, unit);
+        dates.push({ ds, total, occ, free, season: s?.id || "oro", isSelected: ds >= ci && ds < co });
+      }
+    }
+    return dates;
+  })();
+
+  const canBook = nightsOk && client && ptTotal <= avail && unit && client.contractStatus === "Active" && !delinq && (availCheck === null || availCheck > 0);
+  const season = ci ? detS(ci, unit) : null;
+
   return (<Modal title="Nueva Reservación" onClose={onClose} wide>
     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
       <div style={{ gridColumn: "1/-1" }}>
-        <SearchBox clients={clients} onSelect={setSid} selectedId={sid} />
+        <SearchBox clients={clients} onSelect={id => { setSid(id); setAvailCheck(null); }} selectedId={sid} />
         {client && <div style={{ marginTop: 5, padding: "7px 9px", background: BG3, borderRadius: 6, display: "flex", gap: 12, fontSize: 10 }}>
           <span style={{ color: G }}>Disponibles: {avail.toLocaleString()} pts</span>
           {savedA > 0 && <span style={{ color: P }}>{savedA.toLocaleString()} pts guardados</span>}
           {delinq && <span style={{ color: R, fontWeight: 700 }}>⚠ Con morosidad — sin reservas</span>}
         </div>}
       </div>
-      <Inp label="Unidad" value={uid} onChange={v => setUid(+v)} opts={units.filter(u => u.active).map(u => ({ v: u.id, l: `${u.name} — ${uts.find(t => t.id === u.typeId)?.name} · ${u.location || ""}` }))} />
-      <div style={{ background: BG3, borderRadius: 6, padding: "7px 9px", fontSize: 11 }}><div style={{ fontSize: 8, color: T4, marginBottom: 2, textTransform: "uppercase" }}>Temporada detectada</div><div style={{ color: season ? season.color : T4, fontWeight: 700 }}>{season ? `Temporada ${season.name}` : "Selecciona fecha"}</div></div>
-      <Inp label="Check-In" type="date" value={ci} onChange={setCi} />
-      <Inp label="Check-Out" type="date" value={co} onChange={setCo} />
+      <Inp label="Unidad" value={uid} onChange={v => { setUid(+v); setCi(""); setCo(""); setAvailCheck(null); }}
+        opts={[{ v: "", l: "Selecciona una unidad..." }, ...units.filter(u => u.active).map(u => ({ v: u.id, l: `${u.name} — ${uts.find(t => t.id === u.typeId)?.name || ""} · ${u.location || ""}${u.isWeekly ? " 📅 Semanal" : ""}` }))]} />
+      {unit?.isWeekly && <div style={{ background: Y + "15", border: `1px solid ${Y}44`, borderRadius: 6, padding: "7px 9px", fontSize: 10, color: Y }}>
+        📅 Unidad semanal — llegada los {DAYS_ES[unit.weeklyStartDay]} · Mínimo 7 noches
+      </div>}
+      <Inp label={unit?.isWeekly ? `Check-In (${DAYS_ES[unit.weeklyStartDay]})` : "Check-In (mín. 3 noches)"} type="date" value={ci} onChange={handleCiChange} />
+      <Inp label="Check-Out" type="date" value={co} onChange={v => { if (!unit?.isWeekly) { setCo(v); setAvailCheck(null); } }} />
     </div>
-    {conflict && <div style={{ color: R, fontSize: 11, marginTop: 7, padding: "7px 9px", background: R + "12", borderRadius: 6 }}>⚠ Unidad ocupada en esas fechas.</div>}
-    {nights > 0 && unit && season && !conflict && <div style={{ marginTop: 9, padding: "9px", background: BG3, borderRadius: 7, display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 7 }}>
+
+    {/* Validación de mínimo de noches */}
+    {nights > 0 && !nightsOk && <div style={{ color: R, fontSize: 10, marginTop: 6, padding: "6px 9px", background: R + "12", borderRadius: 6 }}>
+      ⛔ Mínimo {minNights} noches requeridas. Actualmente: {nights} noche{nights !== 1 ? "s" : ""}.
+    </div>}
+
+    {/* Calendario de disponibilidad */}
+    {unit && <div style={{ marginTop: 10 }}>
+      <div style={{ fontSize: 9, color: T4, textTransform: "uppercase", marginBottom: 6 }}>Disponibilidad del inventario</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 2 }}>
+        {calDates.slice(0, 62).map(({ ds, free, total, season: sId, isSelected }) => {
+          const color = total === 0 ? T4 : free === 0 ? R : free < total ? Y : G;
+          return (<div key={ds} title={`${ds}: ${free}/${total} disponibles`} style={{ width: 18, height: 18, borderRadius: 3, background: isSelected ? B : color + "33", border: `1px solid ${isSelected ? B : color}55`, fontSize: 7, display: "flex", alignItems: "center", justifyContent: "center", color: isSelected ? "#fff" : color, fontWeight: isSelected ? 700 : 400, cursor: "pointer" }} onClick={() => { if (!unit.isWeekly) { handleCiChange(ds); } }}>
+            {new Date(ds + "T12:00:00").getDate()}
+          </div>);
+        })}
+      </div>
+      <div style={{ display: "flex", gap: 10, marginTop: 5, fontSize: 9 }}>
+        <span style={{ color: G }}>■ Disponible</span>
+        <span style={{ color: Y }}>■ Parcial</span>
+        <span style={{ color: R }}>■ Agotado</span>
+        <span style={{ color: B }}>■ Seleccionado</span>
+        <span style={{ color: T4 }}>■ Sin inventario</span>
+      </div>
+    </div>}
+
+    {/* Resumen de la reservación */}
+    {nightsOk && unit && season && <div style={{ marginTop: 9, padding: "9px", background: BG3, borderRadius: 7, display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 7 }}>
       {[["Noches", nights, T1], ["Dom–Jue/n", calcPts(unit, season.id, false), B], ["Vie–Sáb/n", calcPts(unit, season.id, true), P], ["Total", fP(ptTotal), ptTotal <= avail ? G : R], ["Comisión", f$(rc), Y]].map(([l, v, c]) => (<div key={l}><div style={{ fontSize: 8, color: T4, textTransform: "uppercase", marginBottom: 2 }}>{l}</div><div style={{ color: c, fontWeight: 700 }}>{v}</div></div>))}
     </div>}
-    {!canBook && nights > 0 && !conflict && <div style={{ color: R, fontSize: 10, marginTop: 5 }}>⚠ {delinq ? "Morosidad." : ptTotal > avail ? "Pts insuficientes." : "Datos incompletos."} Disponibles: {avail.toLocaleString()} pts</div>}
+
+    {/* Verificar disponibilidad en BD */}
+    {nightsOk && unit && ci && co && <div style={{ marginTop: 8 }}>
+      {availCheck === null ? (
+        <Btn label={checking ? "Verificando..." : "🔍 Verificar disponibilidad"} variant="ghost" onClick={checkAvailability} disabled={checking} />
+      ) : availCheck > 0 ? (
+        <div style={{ color: G, fontSize: 11, padding: "6px 9px", background: G + "12", borderRadius: 6 }}>✓ Disponible — {availCheck} cuarto{availCheck !== 1 ? "s" : ""} libre{availCheck !== 1 ? "s" : ""} en esas fechas</div>
+      ) : (
+        <div style={{ color: R, fontSize: 11, padding: "6px 9px", background: R + "12", borderRadius: 6 }}>⛔ Sin disponibilidad en esas fechas para esta unidad.</div>
+      )}
+    </div>}
+
+    {!canBook && nightsOk && <div style={{ color: R, fontSize: 10, marginTop: 5 }}>
+      ⚠ {delinq ? "Cliente con morosidad." : ptTotal > avail ? `Puntos insuficientes (necesitas ${fP(ptTotal)}, tienes ${fP(avail)}).` : availCheck === 0 ? "Sin disponibilidad." : "Verifica disponibilidad antes de confirmar."}
+    </div>}
+
     <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 13 }}>
       <Btn label="Cancelar" variant="ghost" onClick={onClose} />
-      <Btn label="Confirmar y Emitir Comprobante" disabled={!canBook || conflict} onClick={() => onSave({ clientId: sid, clientName: client.name, contractNo: client.contractNo, unitId: unit.id, unitName: unit.name, location: unit.location || "", seasonId: season.id, seasonName: season.name, checkIn: ci, checkOut: co, nights, pointsUsed: ptTotal, status: "Confirmed" })} />
+      <Btn label="Confirmar y Emitir Comprobante" disabled={!canBook || availCheck === null || availCheck === 0}
+        onClick={() => onSave({ clientId: sid, clientName: client.name, contractNo: client.contractNo, unitId: unit.id, unitName: unit.name, location: unit.location || "", seasonId: season.id, seasonName: season.name, checkIn: ci, checkOut: co, nights, pointsUsed: ptTotal, status: "Confirmed" })} />
     </div>
   </Modal>);
 }
@@ -1959,7 +2136,8 @@ function PpEditor({ pp, setPp, onSavePricePerPoint }) {
   </div>);
 }
 
-function ConfigView({ seasonOrder, setSeasonOrder, uts, setUts, units, setUnits, pp, setPp, onSaveUnit, onSaveUnitType, onRemoveUnitType, onSavePricePerPoint }) {
+function ConfigView({ seasonOrder, setSeasonOrder, uts, setUts, units, setUnits, pp, setPp, onSaveUnit, onSaveUnitType, onRemoveUnitType, onSavePricePerPoint, pointPrices, savePointPrice, saveUnitAvailability, removeUnitAvailability, saveSeasonRange, removeSeasonRange, cu }) {
+  const canEdit = cu && ["admin", "superadmin"].includes(cu.role);
   const [sec, setSec] = useState("tarifa"), [editUT, setEditUT] = useState(null), [editU, setEditU] = useState(null);
   const mO = MONTHS_ES.map((m, i) => ({ v: i + 1, l: m })), dO = Array.from({ length: 31 }, (_, i) => i + 1).map(d => ({ v: d, l: d }));
   // Orden temporadas: helpers para mover arriba/abajo
@@ -1978,15 +2156,36 @@ function ConfigView({ seasonOrder, setSeasonOrder, uts, setUts, units, setUnits,
   const updSeasonPts = (sId, field, val) => setEditU(u => ({ ...u, seasons: u.seasons.map(s => s.id === sId ? { ...s, [field]: val } : s) }));
   return (<div>
     <div style={{ display: "flex", gap: 5, marginBottom: 16, flexWrap: "wrap" }}>
-      {[["tarifa", "Tarifa"], ["orden", "Orden Temporadas"], ["tipos", "Tipos Unidad"], ["unidades", "Inventario / Temporadas"]].map(([id, l]) => (
+      {[["tarifa", "Tarifa / Precios"], ["orden", "Orden Temporadas"], ["tipos", "Tipos Unidad"], ["unidades", "Inventario / Temporadas"]].map(([id, l]) => (
         <button key={id} onClick={() => setSec(id)} style={{ background: sec === id ? IND : BG2, color: sec === id ? "#fff" : T4, border: `1px solid ${sec === id ? IND : BD}`, borderRadius: 7, padding: "5px 12px", fontSize: 11, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>{l}</button>
       ))}
     </div>
-    {sec === "tarifa" && <div style={{ maxWidth: 400 }}><div style={{ background: BG2, border: `1px solid ${BD}`, borderRadius: 11, padding: 18 }}>
-      <Sec t="Precio Mantenimiento por Punto" />
-      <PpEditor pp={pp} setPp={setPp} onSavePricePerPoint={onSavePricePerPoint} />
-      <div style={{ marginTop: 10, padding: "8px 9px", background: BG3, borderRadius: 6, fontSize: 10, color: T4 }}>Ejemplo 5,000 pts → <b style={{ color: T1 }}>{f$(5000 * pp)}</b></div>
-    </div></div>}
+    {sec === "tarifa" && <div style={{ maxWidth: 600 }}>
+      <div style={{ background: BG2, border: `1px solid ${BD}`, borderRadius: 11, padding: 18, marginBottom: 14 }}>
+        <Sec t="Precio por punto — Años modificables" />
+        <div style={{ fontSize: 10, color: T4, marginBottom: 12 }}>Solo se puede modificar el precio del año en curso ({CY}) y el siguiente ({CY + 1}). Los años anteriores están fijos en $4.75 USD.</div>
+        {[CY, CY + 1].map(yr => {
+          const cur = (pointPrices || []).find(p => p.year === yr);
+          const currentPrice = cur?.priceUsd || 4.75;
+          const [draft, setDraft] = useState(currentPrice);
+          useEffect(() => { setDraft(cur?.priceUsd || 4.75); }, [cur?.priceUsd]);
+          const dirty = +draft !== +currentPrice;
+          return (<div key={yr} style={{ display: "flex", gap: 10, alignItems: "flex-end", marginBottom: 10, padding: "10px 12px", background: BG3, borderRadius: 8 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 9, color: T4, marginBottom: 3 }}>{yr === CY ? "Año en curso" : "Año siguiente"} — {yr}</div>
+              <input type="number" value={draft} min={2} step={0.01} onChange={e => setDraft(+e.target.value)} style={{ ...IS, fontSize: 13, fontWeight: 700, width: 100 }} />
+              <span style={{ fontSize: 10, color: T4, marginLeft: 6 }}>USD/pt</span>
+            </div>
+            <div style={{ color: B, fontWeight: 800, fontSize: 18 }}>{f$(currentPrice)}</div>
+            {dirty && +draft >= 2 && canEdit && <Btn label="Aplicar" variant="success" onClick={() => savePointPrice && savePointPrice(yr, +draft)} />}
+            {dirty && +draft < 2 && <div style={{ color: R, fontSize: 10 }}>Mín. $2.00 USD</div>}
+          </div>);
+        })}
+        <div style={{ background: BG3, borderRadius: 6, padding: "7px 9px", fontSize: 10, color: T4, marginTop: 8 }}>
+          Años anteriores a {CY}: precio fijo $4.75 USD/pt · Ejemplo 5,000 pts → <b style={{ color: T1 }}>{f$(5000 * pp)}</b>
+        </div>
+      </div>
+    </div>}
     {sec === "orden" && <div style={{ maxWidth: 480 }}>
       <div style={{ background: BG2, border: `1px solid ${BD}`, borderRadius: 11, padding: 18 }}>
         <Sec t="Orden de Temporadas (de más alta a más baja)" />
@@ -2002,56 +2201,112 @@ function ConfigView({ seasonOrder, setSeasonOrder, uts, setUts, units, setUnits,
       </div>
     </div>}
     {sec === "tipos" && <div>
-      {editUT && <Modal title="Editar Tipo" onClose={() => setEditUT(null)}>
+      {editUT && <Modal title={editUT.id === "new" ? "Nuevo Tipo de Unidad" : "Editar Tipo"} onClose={() => setEditUT(null)}>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <div style={{ gridColumn: "1/-1" }}><Inp label="Nombre" value={editUT.name} onChange={v => setEditUT(u => ({ ...u, name: v }))} /></div>
-          <Inp label="Pts base/noche" value={editUT.basePts} onChange={v => setEditUT(u => ({ ...u, basePts: +v }))} type="number" />
-          <Inp label="Estado" value={editUT.active ? "si" : "no"} onChange={v => setEditUT(u => ({ ...u, active: v === "si" }))} opts={[{ v: "si", l: "Activo" }, { v: "no", l: "Inactivo" }]} />
+          <div style={{ gridColumn: "1/-1" }}><Inp label="Nombre (ej. Studio, Suite 2 Rec)" value={editUT.name || ""} onChange={v => setEditUT(u => ({ ...u, name: v }))} /></div>
+          <Inp label="Cap. con privacidad (1er número)" value={editUT.privacyCapacity || 2} onChange={v => setEditUT(u => ({ ...u, privacyCapacity: +v }))} type="number" />
+          <Inp label="Cap. máxima (2do número)" value={editUT.maxCapacity || 4} onChange={v => setEditUT(u => ({ ...u, maxCapacity: +v }))} type="number" />
         </div>
-        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}><Btn label="Cancelar" variant="ghost" onClick={() => setEditUT(null)} /><Btn label="Guardar" onClick={() => {
-          setUts(us => us.map(x => x.id === editUT.id ? editUT : x));
-          if (onSaveUnitType) onSaveUnitType(editUT);
-          setEditUT(null);
-        }} /></div>
+        {editUT.privacyCapacity && editUT.maxCapacity && <div style={{ background: BG3, borderRadius: 6, padding: "7px 9px", marginTop: 8, fontSize: 10, color: T2 }}>
+          Tipo: <b style={{ color: B }}>{editUT.privacyCapacity}/{editUT.maxCapacity}</b> — {editUT.privacyCapacity} personas con privacidad · {editUT.maxCapacity} personas máximo
+        </div>}
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}>
+          <Btn label="Cancelar" variant="ghost" onClick={() => setEditUT(null)} />
+          <Btn label="Guardar" onClick={() => {
+            const obj = { ...editUT, name: `${editUT.name || editUT.privacyCapacity + "/" + editUT.maxCapacity}` };
+            if (editUT.id === "new") setUts(us => [...us, { ...obj, id: Date.now() }]);
+            else setUts(us => us.map(x => x.id === editUT.id ? obj : x));
+            if (onSaveUnitType) onSaveUnitType(obj);
+            setEditUT(null);
+          }} />
+        </div>
       </Modal>}
-      <Tbl cols={["Tipo", "Pts Base/noche", "Estado", ""]} rows={uts.map(ut => (<tr key={ut.id} style={{ borderBottom: `1px solid ${BG3}` }}>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+        {canEdit && <Btn label="+ Nuevo Tipo" onClick={() => setEditUT({ id: "new", name: "", privacyCapacity: 2, maxCapacity: 4 })} />}
+      </div>
+      <Tbl cols={["Tipo", "Capacidad Privacidad", "Capacidad Máxima", ""]} rows={uts.map(ut => (<tr key={ut.id} style={{ borderBottom: `1px solid ${BG3}` }}>
         <td style={tW()}>{ut.name}</td>
-        <td style={tBb()}>{ut.basePts} pts</td>
-        <td style={td()}><Bdg l={ut.active ? "Active" : "Cancelado"} /></td>
-        <td style={td()}><Btn label="Editar" variant="ghost" small onClick={() => setEditUT({ ...ut })} /></td>
+        <td style={tBb()}>{ut.privacyCapacity || 2} personas</td>
+        <td style={tBb()}>{ut.maxCapacity || 4} personas</td>
+        <td style={td()}>{canEdit && <Btn label="Editar" variant="ghost" small onClick={() => setEditUT({ ...ut })} />}</td>
       </tr>))} />
     </div>}
     {sec === "unidades" && <div>
       {editU && <Modal title={editU.id === "new" ? "Nueva Unidad" : `Editar: ${editU.name}`} onClose={() => setEditU(null)} wide>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 14 }}>
-          <Inp label="Nombre de unidad" value={editU.name} onChange={v => setEditU(u => ({ ...u, name: v }))} />
-          <Inp label="Tipo" value={editU.typeId} onChange={v => setEditU(u => ({ ...u, typeId: +v }))} opts={uts.map(t => ({ v: t.id, l: t.name }))} />
-          <Inp label="Ubicación (texto libre)" value={editU.location || ""} onChange={v => setEditU(u => ({ ...u, location: v }))} />
+          <Inp label="Nombre de unidad" value={editU.name || ""} onChange={v => setEditU(u => ({ ...u, name: v }))} />
+          <Inp label="Tipo" value={editU.typeId || ""} onChange={v => setEditU(u => ({ ...u, typeId: +v }))} opts={uts.map(t => ({ v: t.id, l: t.name }))} />
+          <Inp label="Ubicación / Destino" value={editU.location || ""} onChange={v => setEditU(u => ({ ...u, location: v }))} />
+          <div style={{ gridColumn: "1/-1" }}>
+            <div style={{ display: "flex", gap: 12, alignItems: "center", padding: "8px 10px", background: BG3, borderRadius: 6 }}>
+              <label style={{ fontSize: 11, color: T2, display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+                <input type="checkbox" checked={editU.isWeekly || false} onChange={e => setEditU(u => ({ ...u, isWeekly: e.target.checked }))} />
+                Reservación semanal (solo se puede reservar por semana completa)
+              </label>
+            </div>
+          </div>
+          {editU.isWeekly && <div style={{ gridColumn: "1/-1" }}>
+            <Inp label="Día de llegada (check-in)" value={editU.weeklyStartDay ?? 5} onChange={v => setEditU(u => ({ ...u, weeklyStartDay: +v }))}
+              opts={[0,1,2,3,4,5,6].map(d => ({ v: d, l: ["Domingo","Lunes","Martes","Miércoles","Jueves","Viernes","Sábado"][d] }))} />
+          </div>}
         </div>
-        <div style={{ fontSize: 9, color: T4, textTransform: "uppercase", letterSpacing: ".1em", marginBottom: 10 }}>Temporadas · Rangos de fechas y costos por noche</div>
-        {editU.seasons.map(s => {
-          const meta = SEASON_META.find(m => m.id === s.id); return (<div key={s.id} style={{ background: BG3, border: `1px solid ${meta.color}33`, borderRadius: 8, padding: "12px 14px", marginBottom: 10, borderLeft: `3px solid ${meta.color}` }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 9 }}>
-              <span style={{ color: meta.color, fontWeight: 700, fontSize: 13 }}>{meta.name}</span>
-              <div style={{ display: "flex", gap: 7, alignItems: "center" }}>
-                <div><label style={{ fontSize: 8, color: T4, textTransform: "uppercase" }}>Dom–Jue pts/noche</label><input type="number" value={s.ptsWd} onChange={e => updSeasonPts(s.id, "ptsWd", +e.target.value)} style={{ ...IS, width: 80, marginTop: 2 }} /></div>
-                <div><label style={{ fontSize: 8, color: T4, textTransform: "uppercase" }}>Vie–Sáb pts/noche</label><input type="number" value={s.ptsWe} onChange={e => updSeasonPts(s.id, "ptsWe", +e.target.value)} style={{ ...IS, width: 80, marginTop: 2 }} /></div>
+
+        {/* Inventario / Disponibilidad */}
+        <div style={{ fontSize: 9, color: T4, textTransform: "uppercase", letterSpacing: ".1em", marginBottom: 8 }}>Inventario disponible</div>
+        {(editU.availability || []).map((a, i) => (
+          <div key={a.id || i} style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto auto", gap: 8, marginBottom: 6, alignItems: "end" }}>
+            <Inp label="Desde" type="date" value={a.startDate || ""} onChange={v => setEditU(u => ({ ...u, availability: u.availability.map((x, j) => j === i ? { ...x, startDate: v } : x) }))} />
+            <Inp label="Hasta" type="date" value={a.endDate || ""} onChange={v => setEditU(u => ({ ...u, availability: u.availability.map((x, j) => j === i ? { ...x, endDate: v } : x) }))} />
+            <Inp label="Cuartos" type="number" value={a.totalRooms || 1} onChange={v => setEditU(u => ({ ...u, availability: u.availability.map((x, j) => j === i ? { ...x, totalRooms: +v } : x) }))} />
+            <Btn label="Guardar" small variant="success" onClick={() => {
+              if (saveUnitAvailability) saveUnitAvailability(editU.id, a.startDate, a.endDate, a.totalRooms, a.id && a.id < 1e9 ? a.id : null);
+            }} />
+          </div>
+        ))}
+        <Btn label="+ Agregar rango de disponibilidad" variant="ghost" small onClick={() => setEditU(u => ({ ...u, availability: [...(u.availability || []), { id: Date.now(), startDate: "", endDate: "", totalRooms: 1 }] }))} />
+
+        {/* Temporadas */}
+        <div style={{ fontSize: 9, color: T4, textTransform: "uppercase", letterSpacing: ".1em", marginBottom: 8, marginTop: 14 }}>Temporadas · Rangos de fechas y puntos por noche</div>
+        <div style={{ fontSize: 9, color: T4, marginBottom: 8 }}>Si una fecha no está en ningún rango, se usará <b style={{ color: "#fbbf24" }}>Oro</b> como temporada default. Si hay solapamiento, se aplica la temporada más alta (Platino {'>'} Oro {'>'} Plata).</div>
+        {SEASON_META.map(meta => {
+          const s = (editU.seasons || []).find(x => (x.season || x.id) === meta.id);
+          const [editing, setEditing] = useState(false);
+          const [sForm, setSForm] = useState(s ? { sm: s.start_month, sd: s.start_day, em: s.end_month, ed: s.end_day, wd: s.pts_weekday || 0, we: s.pts_weekend || 0 } : { sm: 1, sd: 1, em: 12, ed: 31, wd: 0, we: 0 });
+          const MONTHS = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
+          return (<div key={meta.id} style={{ background: BG3, border: `1px solid ${meta.color}33`, borderRadius: 8, padding: "10px 12px", marginBottom: 8, borderLeft: `3px solid ${meta.color}` }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: editing ? 10 : 0 }}>
+              <div>
+                <span style={{ color: meta.color, fontWeight: 700, fontSize: 12 }}>{meta.name}</span>
+                {s && !editing && <span style={{ color: T4, fontSize: 10, marginLeft: 8 }}>{MONTHS[s.start_month-1]} {s.start_day} — {MONTHS[s.end_month-1]} {s.end_day} · Dom-Jue: {s.pts_weekday}pts · Vie-Sáb: {s.pts_weekend}pts</span>}
+                {!s && !editing && <span style={{ color: T4, fontSize: 10, marginLeft: 8 }}>(no configurada — usará oro como default)</span>}
+              </div>
+              <div style={{ display: "flex", gap: 5 }}>
+                <Btn label={editing ? "Cancelar" : s ? "Editar" : "+ Agregar"} variant="ghost" small onClick={() => setEditing(!editing)} />
+                {s && !editing && <Btn label="Quitar" variant="danger" small onClick={() => { if (s.id && s.id < 1e9 && removeSeasonRange) removeSeasonRange(s.id); setEditU(u => ({ ...u, seasons: u.seasons.filter(x => (x.season || x.id) !== meta.id) })); }} />}
               </div>
             </div>
-            <div style={{ fontSize: 9, color: T4, marginBottom: 5, textTransform: "uppercase" }}>Rangos de fechas</div>
-            {(s.ranges || []).map((r, i) => (<div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr auto", gap: 5, marginBottom: 4, alignItems: "center" }}>
-              <select value={r.startMonth} onChange={e => updRange(s.id, i, "startMonth", +e.target.value)} style={{ ...IS, fontSize: 11, padding: "4px 7px" }}>{mO.map(o => <option key={o.v} value={o.v}>{o.l}</option>)}</select>
-              <select value={r.startDay} onChange={e => updRange(s.id, i, "startDay", +e.target.value)} style={{ ...IS, fontSize: 11, padding: "4px 7px" }}>{dO.map(o => <option key={o.v} value={o.v}>{o.l}</option>)}</select>
-              <select value={r.endMonth} onChange={e => updRange(s.id, i, "endMonth", +e.target.value)} style={{ ...IS, fontSize: 11, padding: "4px 7px" }}>{mO.map(o => <option key={o.v} value={o.v}>{o.l}</option>)}</select>
-              <select value={r.endDay} onChange={e => updRange(s.id, i, "endDay", +e.target.value)} style={{ ...IS, fontSize: 11, padding: "4px 7px" }}>{dO.map(o => <option key={o.v} value={o.v}>{o.l}</option>)}</select>
-              <Btn label="✕" variant="danger" small onClick={() => delRange(s.id, i)} />
-            </div>))}
-            <Btn label="+ Agregar rango" variant="ghost" small onClick={() => addRange(s.id)} />
+            {editing && <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr 1fr", gap: 8 }}>
+              <Inp label="Inicio Mes" value={sForm.sm} onChange={v => setSForm(f => ({ ...f, sm: +v }))} opts={MONTHS.map((m, i) => ({ v: i+1, l: m }))} />
+              <Inp label="Inicio Día" value={sForm.sd} onChange={v => setSForm(f => ({ ...f, sd: +v }))} type="number" />
+              <Inp label="Fin Mes" value={sForm.em} onChange={v => setSForm(f => ({ ...f, em: +v }))} opts={MONTHS.map((m, i) => ({ v: i+1, l: m }))} />
+              <Inp label="Fin Día" value={sForm.ed} onChange={v => setSForm(f => ({ ...f, ed: +v }))} type="number" />
+              <Inp label="Pts Dom-Jue" value={sForm.wd} onChange={v => setSForm(f => ({ ...f, wd: +v }))} type="number" />
+              <Inp label="Pts Vie-Sáb" value={sForm.we} onChange={v => setSForm(f => ({ ...f, we: +v }))} type="number" />
+              <div style={{ gridColumn: "1/-1", display: "flex", justifyContent: "flex-end" }}>
+                <Btn label="Guardar temporada" variant="success" small onClick={() => {
+                  const newS = { id: s?.id || Date.now(), season: meta.id, start_month: sForm.sm, start_day: sForm.sd, end_month: sForm.em, end_day: sForm.ed, pts_weekday: sForm.wd, pts_weekend: sForm.we };
+                  setEditU(u => ({ ...u, seasons: [...(u.seasons || []).filter(x => (x.season || x.id) !== meta.id), newS] }));
+                  if (saveSeasonRange) saveSeasonRange(editU.id, meta.id, sForm.sm, sForm.sd, sForm.em, sForm.ed, sForm.wd, sForm.we);
+                  setEditing(false);
+                }} />
+              </div>
+            </div>}
           </div>);
         })}
-        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}>
+
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
           <Btn label="Cancelar" variant="ghost" onClick={() => setEditU(null)} />
-          <Btn label="Guardar" onClick={() => {
+          <Btn label="Guardar Unidad" onClick={() => {
             const isNew = editU.id === "new";
             if (isNew) setUnits(us => [...us, { ...editU, id: Date.now() }]);
             else setUnits(us => us.map(x => x.id === editU.id ? editU : x));
@@ -2060,19 +2315,26 @@ function ConfigView({ seasonOrder, setSeasonOrder, uts, setUts, units, setUnits,
           }} />
         </div>
       </Modal>}
-      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}><Btn label="+ Nueva Unidad" onClick={() => setEditU(emptyUnit())} /></div>
-      <Tbl cols={["Unidad", "Tipo", "Ubicación", "Temporadas", "Occ.", "Estado", ""]} rows={units.map(u => {
-        const ut = uts.find(t => t.id === u.typeId); return (<tr key={u.id} style={{ borderBottom: `1px solid ${BG3}`, opacity: u.active ? 1 : .4 }}>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+        {canEdit && <Btn label="+ Nueva Unidad" onClick={() => setEditU({ id: "new", name: "", typeId: uts[0]?.id || 1, location: "", isWeekly: false, weeklyStartDay: 5, active: true, seasons: [], availability: [] })} />}
+      </div>
+      <Tbl cols={["Unidad", "Tipo", "Ubicación", "Semanal", "Inventario", "Estado", ""]} rows={units.map(u => {
+        const ut = uts.find(t => t.id === u.typeId);
+        const totalRooms = (u.availability || []).reduce((a, av) => Math.max(a, av.totalRooms), 0);
+        return (<tr key={u.id} style={{ borderBottom: `1px solid ${BG3}`, opacity: u.active ? 1 : .4 }}>
           <td style={tW()}>{u.name}</td>
           <td style={tG3()}>{ut?.name}</td>
           <td style={tG3()}>{u.location || "—"}</td>
-          <td style={tS()}>{(u.seasons || []).map(s => { const m = SEASON_META.find(x => x.id === s.id); return (<span key={s.id} style={{ color: m?.color || T3, marginRight: 5 }}>{m?.name}:{s.ptsWd}/{s.ptsWe}</span>); })}</td>
-          <td style={tBs()}>{(u.occ || []).length} res.</td>
+          <td style={td({ color: u.isWeekly ? Y : T4 })}>{u.isWeekly ? `📅 Semanal (${["Dom","Lun","Mar","Mié","Jue","Vie","Sáb"][u.weeklyStartDay]})` : "Libre"}</td>
+          <td style={tBs()}>{totalRooms > 0 ? `${totalRooms} cuartos` : <span style={{ color: R }}>Sin inventario</span>}</td>
           <td style={td()}><Bdg l={u.active ? "Active" : "Cancelado"} /></td>
-          <td style={tFl()}><Btn label="Editar" variant="ghost" small onClick={() => setEditU({ ...u, seasons: [...(u.seasons || []).map(s => ({ ...s, ranges: [...(s.ranges || [])] }))] })} /><Btn label={u.active ? "Baja" : "Activar"} variant={u.active ? "danger" : "success"} small onClick={() => {
-            setUnits(us => us.map(x => x.id === u.id ? { ...x, active: !x.active } : x));
-            if (onSaveUnit) onSaveUnit({ ...u, active: !u.active });
-          }} /></td>
+          <td style={tFl()}>
+            {canEdit && <Btn label="Editar" variant="ghost" small onClick={() => setEditU({ ...u, seasons: [...(u.seasons || [])], availability: [...(u.availability || [])] })} />}
+            {canEdit && <Btn label={u.active ? "Baja" : "Activar"} variant={u.active ? "danger" : "success"} small onClick={() => {
+              setUnits(us => us.map(x => x.id === u.id ? { ...x, active: !x.active } : x));
+              if (onSaveUnit) onSaveUnit({ ...u, active: !u.active });
+            }} />}
+          </td>
         </tr>);
       })} />
     </div>}
@@ -2869,6 +3131,7 @@ export default function App() {
   const [rc, setRc] = useState(150);
   const [courtesies, setCourtesies] = useState([]);
   const [condonations, setCondonations] = useState([]);
+  const [pointPrices, setPointPrices] = useState([]);
   const [cr, setCr] = useState(INIT_CR);
   const [promises, setPromises] = useState([]);
   const [pendingSales, setPendingSales] = useState([]);
@@ -2932,6 +3195,12 @@ export default function App() {
         const dbCourtesies = await fetchCourtesies();
         if (dbCourtesies.length > 0) setCourtesies(dbCourtesies);
       } catch (e) { console.warn('No se pudo cargar cortesías:', e.message); }
+
+      // Cargar precios por punto por año
+      try {
+        const dbPrices = await fetchPointPrices();
+        if (dbPrices.length > 0) setPointPrices(dbPrices);
+      } catch (e) { console.warn('No se pudo cargar point_prices:', e.message); }
 
       // Cargar condonaciones (necesario antes de calcular saldo dinámico)
       let dbCondonations = [];
@@ -3429,6 +3698,68 @@ export default function App() {
     }
   };
 
+  // Función helper: obtener precio por punto para un año específico
+  const getPointPriceForYear = (year) => getPriceForYear(pointPrices, year);
+
+  // Guardar precio por punto por año
+  const savePointPrice = async (year, priceUsd) => {
+    try {
+      if (priceUsd < 2) { alert('El precio mínimo por punto es $2.00 USD'); return; }
+      const dbUser = users.find(u => u.username === cu?.username);
+      await upsertPointPrice(year, priceUsd, dbUser?.id || null);
+      await loadAll();
+    } catch (e) {
+      console.error('Error guardando precio:', e);
+      alert('Error guardando precio: ' + (e.message || JSON.stringify(e)));
+    }
+  };
+
+  // CRUD de disponibilidad de unidades
+  const saveUnitAvailability = async (unitId, startDate, endDate, totalRooms, existingId) => {
+    try {
+      if (existingId) {
+        await updateUnitAvailability(existingId, { startDate, endDate, totalRooms });
+      } else {
+        await insertUnitAvailability(unitId, startDate, endDate, totalRooms);
+      }
+      await loadAll();
+    } catch (e) {
+      console.error('Error guardando disponibilidad:', e);
+      alert('Error guardando disponibilidad: ' + (e.message || JSON.stringify(e)));
+    }
+  };
+
+  const removeUnitAvailability = async (id) => {
+    try {
+      await deleteUnitAvailability(id);
+      await loadAll();
+    } catch (e) {
+      console.error('Error eliminando disponibilidad:', e);
+      alert('Error: ' + (e.message || JSON.stringify(e)));
+    }
+  };
+
+  // Guardar rango de temporada de unidad
+  const saveSeasonRange = async (unitId, season, startMonth, startDay, endMonth, endDay, ptsWeekday, ptsWeekend) => {
+    try {
+      await upsertUnitSeasonRange(unitId, season, startMonth, startDay, endMonth, endDay, ptsWeekday, ptsWeekend);
+      await loadAll();
+    } catch (e) {
+      console.error('Error guardando temporada:', e);
+      alert('Error: ' + (e.message || JSON.stringify(e)));
+    }
+  };
+
+  const removeSeasonRange = async (id) => {
+    try {
+      await deleteUnitSeasonRange(id);
+      await loadAll();
+    } catch (e) {
+      console.error('Error eliminando temporada:', e);
+      alert('Error: ' + (e.message || JSON.stringify(e)));
+    }
+  };
+
   const saveRecoveredPoints = async (clientId, points, maintYear, note) => {
     try {
       const dbUser = users.find(u => u.username === cu?.username);
@@ -3507,7 +3838,7 @@ export default function App() {
         {tab === "res" && <ReservationsView clients={clients} reservations={reservations} setReservations={setReservations} units={units} setUnits={setUnits} uts={uts} cu={cu} rc={rc} payments={payments} condonations={condonations} preselClientId={preselResClient} onClearPresel={() => setPreselResClient(null)} onSaveReservation={saveReservation} onCancelReservation={cancelReservation} />}
         {tab === "col" && <CollectionsView clients={clients} payments={payments} pp={pp} promises={promises} setPromises={setPromises} cu={cu} fxRate={fxRate} onSavePromise={savePromise} onUpdatePromise={updatePromiseStatus} condonations={condonations} />}
         {tab === "reports" && <ReportsView clients={clients} reservations={reservations} payments={payments} pp={pp} users={users} role={cu.role} courtesies={courtesies} rc={rc} condonations={condonations} />}
-        {tab === "config" && <ConfigView seasonOrder={seasonOrder} setSeasonOrder={setSeasonOrder} uts={uts} setUts={setUts} units={units} setUnits={setUnits} pp={pp} setPp={setPp} onSaveUnit={saveUnit} onSaveUnitType={saveUnitType} onRemoveUnitType={removeUnitType} onSavePricePerPoint={savePricePerPoint} />}
+        {tab === "config" && <ConfigView seasonOrder={seasonOrder} setSeasonOrder={setSeasonOrder} uts={uts} setUts={setUts} units={units} setUnits={setUnits} pp={pp} setPp={setPp} onSaveUnit={saveUnit} onSaveUnitType={saveUnitType} onRemoveUnitType={removeUnitType} onSavePricePerPoint={savePricePerPoint} pointPrices={pointPrices} savePointPrice={savePointPrice} saveUnitAvailability={saveUnitAvailability} removeUnitAvailability={removeUnitAvailability} saveSeasonRange={saveSeasonRange} removeSeasonRange={removeSeasonRange} cu={cu} />}
         {tab === "pmethods" && <PayMethodsView pms={pms} setPms={setPms} onSavePm={savePaymentMethod} />}
         {tab === "comp" && <CompView users={users} setUsers={setUsers} payments={payments} reservations={reservations} pp={pp} rc={rc} setRc={setRc} cr={cr} setCr={setCr} onSaveUser={saveUser} onSaveCommissionRate={saveCommissionRate} onSaveReservationFee={saveReservationFee} />}
         {tab === "users" && <UsersView cu={cu} users={users} setUsers={setUsers} rc={rc} onSaveUser={saveUser} />}

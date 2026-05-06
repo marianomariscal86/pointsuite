@@ -199,7 +199,7 @@ export async function updateReservation(id, fields) {
 export async function fetchUnits() {
   const { data, error } = await supabase
     .from('units')
-    .select('*, unit_season_ranges(*)')
+    .select('*, unit_season_ranges(*), unit_availability(*)')
     .order('id');
   if (error) throw error;
   return data.map(u => ({
@@ -208,8 +208,13 @@ export async function fetchUnits() {
     typeId: u.unit_type_id,
     location: u.location || '',
     active: u.is_active !== false,
+    isWeekly: u.is_weekly || false,
+    weeklyStartDay: u.weekly_start_day ?? 5,
     occ: [],
     seasons: u.unit_season_ranges || [],
+    availability: (u.unit_availability || []).map(a => ({
+      id: a.id, startDate: a.start_date, endDate: a.end_date, totalRooms: a.total_rooms,
+    })),
   }));
 }
 
@@ -221,6 +226,8 @@ export async function insertUnit(u) {
       unit_type_id: u.typeId,
       location: u.location || '',
       is_active: u.active !== false,
+      is_weekly: u.isWeekly || false,
+      weekly_start_day: u.weeklyStartDay ?? 5,
     }])
     .select().single();
   if (error) throw error;
@@ -233,10 +240,9 @@ export async function updateUnit(id, fields) {
   if (fields.typeId !== undefined) dbFields.unit_type_id = fields.typeId;
   if (fields.location !== undefined) dbFields.location = fields.location;
   if (fields.active !== undefined) dbFields.is_active = fields.active;
-  const { error } = await supabase
-    .from('units')
-    .update(dbFields)
-    .eq('id', id);
+  if (fields.isWeekly !== undefined) dbFields.is_weekly = fields.isWeekly;
+  if (fields.weeklyStartDay !== undefined) dbFields.weekly_start_day = fields.weeklyStartDay;
+  const { error } = await supabase.from('units').update(dbFields).eq('id', id);
   if (error) throw error;
 }
 
@@ -246,23 +252,27 @@ export async function fetchUnitTypes() {
     .select('*')
     .order('id');
   if (error) return [];
-  return data.map(t => ({ id: t.id, name: t.name }));
+  return data.map(t => ({
+    id: t.id, name: t.name,
+    privacyCapacity: t.privacy_capacity || 2,
+    maxCapacity: t.max_capacity || 4,
+  }));
 }
 
-export async function insertUnitType(name) {
+export async function insertUnitType(name, privacyCapacity, maxCapacity) {
   const { data, error } = await supabase
     .from('unit_types')
-    .insert([{ name }])
+    .insert([{ name, privacy_capacity: privacyCapacity || 2, max_capacity: maxCapacity || 4 }])
     .select().single();
   if (error) throw error;
   return data;
 }
 
-export async function updateUnitType(id, name) {
-  const { error } = await supabase
-    .from('unit_types')
-    .update({ name })
-    .eq('id', id);
+export async function updateUnitType(id, name, privacyCapacity, maxCapacity) {
+  const dbFields = { name };
+  if (privacyCapacity !== undefined) dbFields.privacy_capacity = privacyCapacity;
+  if (maxCapacity !== undefined) dbFields.max_capacity = maxCapacity;
+  const { error } = await supabase.from('unit_types').update(dbFields).eq('id', id);
   if (error) throw error;
 }
 
@@ -758,4 +768,130 @@ export async function insertCondonation(clientId, maintYear, reason, authorizedB
     .select().single();
   if (error) throw error;
   return data;
+}
+
+// ─── PRECIOS POR PUNTO POR AÑO ────────────────────────────
+export async function fetchPointPrices() {
+  const { data, error } = await supabase
+    .from('point_prices')
+    .select('*')
+    .order('year');
+  if (error) return [];
+  return data.map(r => ({
+    id: r.id, year: r.year, priceUsd: parseFloat(r.price_usd || 4.75),
+    effectiveFrom: r.effective_from, createdAt: r.created_at,
+  }));
+}
+
+export async function upsertPointPrice(year, priceUsd, userId) {
+  const { data: existing } = await supabase
+    .from('point_prices').select('id').eq('year', year).single();
+  if (existing) {
+    const { error } = await supabase.from('point_prices')
+      .update({ price_usd: priceUsd, effective_from: new Date().toISOString().split('T')[0] })
+      .eq('year', year);
+    if (error) throw error;
+  } else {
+    const { error } = await supabase.from('point_prices')
+      .insert([{ year, price_usd: priceUsd, effective_from: new Date().toISOString().split('T')[0], created_by: userId }]);
+    if (error) throw error;
+  }
+}
+
+export function getPriceForYear(pointPrices, year) {
+  const match = pointPrices.find(p => p.year === year);
+  return match ? match.priceUsd : 4.75;
+}
+
+// ─── UNIT AVAILABILITY ────────────────────────────────────
+export async function fetchUnitAvailability() {
+  const { data, error } = await supabase
+    .from('unit_availability')
+    .select('*')
+    .order('start_date');
+  if (error) return [];
+  return data.map(r => ({
+    id: r.id, unitId: r.unit_id,
+    startDate: r.start_date, endDate: r.end_date,
+    totalRooms: r.total_rooms,
+  }));
+}
+
+export async function insertUnitAvailability(unitId, startDate, endDate, totalRooms) {
+  const { data, error } = await supabase
+    .from('unit_availability')
+    .insert([{ unit_id: unitId, start_date: startDate, end_date: endDate, total_rooms: totalRooms }])
+    .select().single();
+  if (error) throw error;
+  return data;
+}
+
+export async function updateUnitAvailability(id, fields) {
+  const dbFields = {};
+  if (fields.startDate !== undefined) dbFields.start_date = fields.startDate;
+  if (fields.endDate !== undefined) dbFields.end_date = fields.endDate;
+  if (fields.totalRooms !== undefined) dbFields.total_rooms = fields.totalRooms;
+  const { error } = await supabase.from('unit_availability').update(dbFields).eq('id', id);
+  if (error) throw error;
+}
+
+export async function deleteUnitAvailability(id) {
+  const { error } = await supabase.from('unit_availability').delete().eq('id', id);
+  if (error) throw error;
+}
+
+// Calcular habitaciones disponibles para una unidad en un rango de fechas
+export async function getAvailableRooms(unitId, checkIn, checkOut) {
+  // Obtener capacidad total para ese período
+  const { data: avail } = await supabase
+    .from('unit_availability')
+    .select('total_rooms')
+    .eq('unit_id', unitId)
+    .lte('start_date', checkIn)
+    .gte('end_date', checkOut)
+    .limit(1).single();
+  if (!avail) return 0;
+  const total = avail.total_rooms;
+  // Contar reservaciones confirmadas que se traslapen
+  const { data: resv } = await supabase
+    .from('reservations')
+    .select('id')
+    .eq('unit_id', unitId)
+    .eq('status', 'Confirmed')
+    .lt('check_in', checkOut)
+    .gt('check_out', checkIn);
+  const occupied = resv ? resv.length : 0;
+  return Math.max(0, total - occupied);
+}
+
+// ─── UNIT SEASON RANGES CRUD ──────────────────────────────
+export async function upsertUnitSeasonRange(unitId, season, startMonth, startDay, endMonth, endDay, ptsWeekday, ptsWeekend) {
+  // Check if exists
+  const { data: existing } = await supabase
+    .from('unit_season_ranges')
+    .select('id')
+    .eq('unit_id', unitId)
+    .eq('season', season)
+    .single();
+  if (existing) {
+    const { error } = await supabase.from('unit_season_ranges').update({
+      start_month: startMonth, start_day: startDay,
+      end_month: endMonth, end_day: endDay,
+      pts_weekday: ptsWeekday, pts_weekend: ptsWeekend,
+    }).eq('id', existing.id);
+    if (error) throw error;
+  } else {
+    const { error } = await supabase.from('unit_season_ranges').insert([{
+      unit_id: unitId, season,
+      start_month: startMonth, start_day: startDay,
+      end_month: endMonth, end_day: endDay,
+      pts_weekday: ptsWeekday, pts_weekend: ptsWeekend,
+    }]);
+    if (error) throw error;
+  }
+}
+
+export async function deleteUnitSeasonRange(id) {
+  const { error } = await supabase.from('unit_season_ranges').delete().eq('id', id);
+  if (error) throw error;
 }
