@@ -1754,19 +1754,30 @@ function CollectionsView({ clients, payments, pp, promises, setPromises, cu, fxR
 function PointSalesView({ clients, setClients, payments, setPayments, pp, pms, cu, pendingSales, setPendingSales, onSavePointSale }) {
   const isAdmin = ["superadmin", "admin"].includes(cu.role), isCajero = cu.role === "cajero";
   const [sid, setSid] = useState(null), [stype, setStype] = useState("immediate"), [pts, setPts] = useState(""), [mid, setMid] = useState("1"), [note, setNote] = useState(""), [date, setDate] = useState(new Date().toISOString().split("T")[0]), [ok, setOk] = useState(null), [eYr, setEYr] = useState(0), [eAn, setEAn] = useState(0), [showSim, setShowSim] = useState(false);
+  // Precio por punto personalizable — mínimo $2 USD, sin máximo
+  const [customPP, setCustomPP] = useState(pp);
+  useEffect(() => { setCustomPP(pp); }, [pp]);
+  const activePP = Math.max(2, +customPP || pp);
+  const ppError = +customPP > 0 && +customPP < 2;
+
   const client = clients.find(c => c.id === sid), pm = pms.find(m => m.id === +mid) || pms[0];
-  const maint = (pts && stype === "immediate") ? +pts * pp : 0, ptsCost = pts ? +pts * pp : 0, totalCost = stype === "immediate" ? ptsCost + maint : ptsCost, txC = totalCost * (pm?.costPct || 0) / 100;
+  // Costo de mantenimiento adicional para puntos de uso inmediato
+  const maint = (pts && stype === "immediate") ? +pts * activePP : 0;
+  const ptsCost = pts ? +pts * activePP : 0;
+  const totalCost = stype === "immediate" ? ptsCost + maint : ptsCost;
+  const txC = totalCost * (pm?.costPct || 0) / 100;
   const yr = client ? Math.max(1, (client.contractYears || 1) - (client.yearsElapsed || 0)) : 1, newYr = yr + (+eYr || 0), newTot = (client?.totalPoints || 0) + (+pts || 0);
   let fA = 0;
   if (stype === "increase_annual" && +eAn > 0) fA = (client?.annualPoints || 0) + (+eAn);
   else if (stype === "hybrid") fA = +eAn > 0 ? (client?.annualPoints || 0) + (+eAn) : calcAP(newTot, client?.pointsUsedToDate || 0, Math.max(1, (client?.contractYears || 1) + (+eYr || 0) - (client?.yearsElapsed || 0)));
   else fA = calcAP(newTot, client?.pointsUsedToDate || 0, newYr);
-  const minA = client?.annualPoints || 0; // Regla: no puede quedar con menos pts/año que los que ya tenía
-  const aOk = stype === "immediate" || fA >= minA, canSub = !isCajero && client && pts && +pts > 0 && aOk;
+  const minA = client?.annualPoints || 0;
+  const aOk = stype === "immediate" || fA >= minA, canSub = !isCajero && client && pts && +pts > 0 && aOk && !ppError;
   const now = Date.now();
   const submit = () => {
     if (!canSub) return;
-    const sale = { id: Date.now(), clientId: client.id, clientName: client.name, contractNo: client.contractNo, date, pts: +pts, stype, eYr: +eYr || 0, eAn: +eAn || 0, totalCost, pm: pm?.name || "", costPct: pm?.costPct || 0, note, submittedBy: cu.username, submittedAt: new Date().toISOString(), expiresAt: new Date(now + 48 * 3600000).toISOString(), status: "Pendiente" };
+    if (activePP < 2) { alert("El precio mínimo por punto es $2.00 USD"); return; }
+    const sale = { id: Date.now(), clientId: client.id, clientName: client.name, contractNo: client.contractNo, date, pts: +pts, stype, eYr: +eYr || 0, eAn: +eAn || 0, totalCost, pricePerPt: activePP, pm: pm?.name || "", costPct: pm?.costPct || 0, note, submittedBy: cu.username, submittedAt: new Date().toISOString(), expiresAt: new Date(now + 48 * 3600000).toISOString(), status: "Pendiente" };
     setPendingSales(ps => [...ps, sale]); setOk({ name: client.name, pts: +pts, cost: totalCost, id: sale.id }); setPts(""); setNote(""); setSid(null); setEYr(0); setEAn(0); setShowSim(false);
   };
   const validate = id => {
@@ -1817,6 +1828,11 @@ function PointSalesView({ clients, setClients, payments, setPayments, pp, pms, c
             {[["Pts tot.", client.totalPoints.toLocaleString(), B], ["Pts/año", client.annualPoints.toLocaleString(), P], ["Pagados", client.paidPoints.toLocaleString(), G], ["Años rest.", yr + " a", Y]].map(([l, v, c]) => (<div key={l}><div style={{ fontSize: 8, color: T4, textTransform: "uppercase" }}>{l}</div><div style={{ color: c, fontWeight: 700 }}>{v}</div></div>))}
           </div>}
           <Inp label="Tipo de venta" value={stype} onChange={v => { setStype(v); setEYr(0); setEAn(0); }} opts={tOpts} />
+          <div>
+            <Inp label="Precio por punto (USD) — mín. $2.00 USD" value={customPP} onChange={v => setCustomPP(+v)} type="number" />
+            {ppError && <div style={{ color: R, fontSize: 10, marginTop: 3, fontWeight: 700 }}>⛔ El precio mínimo es $2.00 USD por punto.</div>}
+            {!ppError && customPP > 0 && +customPP !== pp && <div style={{ color: Y, fontSize: 10, marginTop: 3 }}>Precio del sistema: ${pp} USD · Precio aplicado: ${customPP} USD</div>}
+          </div>
           <Inp label="Puntos a vender" value={pts} onChange={setPts} type="number" />
           {stype === "hybrid" && <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}><Inp label="Años adicionales" value={eYr} onChange={v => setEYr(Math.max(0, +v))} type="number" /><Inp label="Pts/año adicionales" value={eAn} onChange={v => setEAn(Math.max(0, +v))} type="number" /></div>}
           {stype === "increase_annual" && <Inp label="Pts/año adicionales" value={eAn} onChange={v => setEAn(Math.max(0, +v))} type="number" />}
@@ -2588,10 +2604,12 @@ function TeamView({ users, setUsers, clients, setClients, payments, reservations
     if (onSaveUser) onSaveUser(isNew ? obj : { ...obj, id: modal.id });
     setModal(null);
   };
-  const doAssign = () => {
+  const doAssign = async () => {
     if (!agt || !selC.length) return;
-    setClients(cs => cs.map(c => selC.includes(c.id) ? { ...c, assignedGestor: agt } : c));
-    if (onAssignGestor) selC.forEach(cid => onAssignGestor(cid, +agt));
+    // Optimistic update
+    setClients(cs => cs.map(c => selC.includes(c.id) ? { ...c, assignedGestor: String(agt) } : c));
+    // Save batch to DB
+    if (onAssignGestor) await onAssignGestor(selC, +agt);
     setSelC([]); setAgt("");
   };
   return (<div>
@@ -2657,9 +2675,9 @@ function TeamView({ users, setUsers, clients, setClients, payments, reservations
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}><span style={{ color: g.color, fontWeight: 700, fontSize: 12 }}>{g.name}</span><span style={{ color: T4, fontSize: 10 }}>{gC.length} cuentas</span></div>
             {gC.map(c => (<div key={c.id} style={{ padding: "4px 7px", background: BG3, borderRadius: 4, marginBottom: 2, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <span style={{ color: T2, fontSize: 11 }}>{c.name}</span>
-              <div style={{ display: "flex", gap: 6, alignItems: "center" }}><span style={{ color: c.balance > 0 ? R : G, fontSize: 10 }}>{f$(c.balance)}</span><Btn label="Quitar" variant="danger" small onClick={() => {
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}><span style={{ color: c.balance > 0 ? R : G, fontSize: 10 }}>{f$(c.balance)}</span><Btn label="Quitar" variant="danger" small onClick={async () => {
                 setClients(cs => cs.map(x => x.id === c.id ? { ...x, assignedGestor: "" } : x));
-                if (onAssignGestor) onAssignGestor(c.id, null);
+                if (onAssignGestor) await onAssignGestor([c.id], null);
               }} /></div>
             </div>))}
             {gC.length === 0 && <div style={{ fontSize: 10, color: T4, padding: "4px 0" }}>Sin cuentas</div>}
@@ -3663,9 +3681,13 @@ export default function App() {
   };
 
   // Asignar/Quitar gestor (solo admin/superadmin desde TeamView)
-  const assignGestor = async (clientId, gestorUserId) => {
+  const assignGestor = async (clientIds, gestorUserId) => {
     try {
-      await updateClient(clientId, { assigned_gestor_id: gestorUserId });
+      const ids = Array.isArray(clientIds) ? clientIds : [clientIds];
+      // Update all sequentially, single loadAll at the end
+      for (const cid of ids) {
+        await updateClient(cid, { assigned_gestor_id: gestorUserId });
+      }
       await loadAll();
     } catch (e) {
       console.error(e); alert('Error: ' + (e.message || JSON.stringify(e)));
