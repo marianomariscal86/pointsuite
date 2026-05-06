@@ -865,30 +865,30 @@ export async function getAvailableRooms(unitId, checkIn, checkOut) {
 }
 
 // ─── UNIT SEASON RANGES CRUD ──────────────────────────────
-export async function upsertUnitSeasonRange(unitId, season, startMonth, startDay, endMonth, endDay, ptsWeekday, ptsWeekend) {
-  // Check if exists
-  const { data: existing } = await supabase
+export async function insertUnitSeasonRange(unitId, season, startMonth, startDay, endMonth, endDay, ptsWeekday, ptsWeekend) {
+  const { data, error } = await supabase
     .from('unit_season_ranges')
-    .select('id')
-    .eq('unit_id', unitId)
-    .eq('season', season)
-    .single();
-  if (existing) {
-    const { error } = await supabase.from('unit_season_ranges').update({
-      start_month: startMonth, start_day: startDay,
-      end_month: endMonth, end_day: endDay,
-      pts_weekday: ptsWeekday, pts_weekend: ptsWeekend,
-    }).eq('id', existing.id);
-    if (error) throw error;
-  } else {
-    const { error } = await supabase.from('unit_season_ranges').insert([{
+    .insert([{
       unit_id: unitId, season,
       start_month: startMonth, start_day: startDay,
       end_month: endMonth, end_day: endDay,
-      pts_weekday: ptsWeekday, pts_weekend: ptsWeekend,
-    }]);
-    if (error) throw error;
-  }
+      pts_weekday: ptsWeekday || 0, pts_weekend: ptsWeekend || 0,
+    }])
+    .select().single();
+  if (error) throw error;
+  return data;
+}
+
+export async function updateUnitSeasonRange(id, startMonth, startDay, endMonth, endDay, ptsWeekday, ptsWeekend) {
+  const { error } = await supabase
+    .from('unit_season_ranges')
+    .update({
+      start_month: startMonth, start_day: startDay,
+      end_month: endMonth, end_day: endDay,
+      pts_weekday: ptsWeekday || 0, pts_weekend: ptsWeekend || 0,
+    })
+    .eq('id', id);
+  if (error) throw error;
 }
 
 export async function deleteUnitSeasonRange(id) {

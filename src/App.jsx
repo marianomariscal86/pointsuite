@@ -23,7 +23,7 @@ import {
   fetchCondonations, insertCondonation,
   fetchPointPrices, upsertPointPrice, getPriceForYear,
   fetchUnitAvailability, insertUnitAvailability, updateUnitAvailability, deleteUnitAvailability, getAvailableRooms,
-  upsertUnitSeasonRange, deleteUnitSeasonRange,
+  insertUnitSeasonRange, updateUnitSeasonRange, deleteUnitSeasonRange,
 } from './lib/db.js';
 const BG = "#030912", BG2 = "#060d19", BG3 = "#0b1628", BD = "#18263d";
 const T1 = "#e2e8f0", T2 = "#8aa8c0", T3 = "#2e4a66", T4 = "#1e3558", T5 = "#2d4563"; // Corregido: T5 definido aquí
@@ -2136,47 +2136,84 @@ function PpEditor({ pp, setPp, onSavePricePerPoint }) {
   </div>);
 }
 
-// ── SEASON ROW — componente separado para evitar useState dentro de .map() ────
+// ── SEASON ROW — múltiples rangos de fechas por temporada ──────────────────
 const MONTHS_CONF = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
 function SeasonRow({ meta, editU, setEditU, saveSeasonRange, removeSeasonRange }) {
-  const s = (editU.seasons || []).find(x => (x.season || x.id) === meta.id);
-  const [editing, setEditing] = useState(false);
-  const [sForm, setSForm] = useState({ sm: s?.start_month || 1, sd: s?.start_day || 1, em: s?.end_month || 12, ed: s?.end_day || 31, wd: s?.pts_weekday || 0, we: s?.pts_weekend || 0 });
-  // Sync if s changes
-  useEffect(() => {
-    if (s) setSForm({ sm: s.start_month, sd: s.start_day, em: s.end_month, ed: s.end_day, wd: s.pts_weekday || 0, we: s.pts_weekend || 0 });
-  }, [s?.start_month, s?.end_month, s?.pts_weekday]);
+  // Todos los rangos de esta temporada para esta unidad
+  const ranges = (editU.seasons || []).filter(x => (x.season || x.id) === meta.id);
+  const [adding, setAdding] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const emptyForm = { sm: 1, sd: 1, em: 12, ed: 31, wd: ranges[0]?.pts_weekday || 0, we: ranges[0]?.pts_weekend || 0 };
+  const [addForm, setAddForm] = useState(emptyForm);
+  const [editForm, setEditForm] = useState({});
+
+  const totalRanges = ranges.length;
+
   return (<div style={{ background: BG3, border: `1px solid ${meta.color}33`, borderRadius: 8, padding: "10px 12px", marginBottom: 8, borderLeft: `3px solid ${meta.color}` }}>
-    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: editing ? 10 : 0 }}>
+    {/* Header */}
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: totalRanges > 0 ? 8 : 0 }}>
       <div>
         <span style={{ color: meta.color, fontWeight: 700, fontSize: 12 }}>{meta.name}</span>
-        {s && !editing && <span style={{ color: T4, fontSize: 10, marginLeft: 8 }}>{MONTHS_CONF[s.start_month-1]} {s.start_day} — {MONTHS_CONF[s.end_month-1]} {s.end_day} · Dom-Jue: {s.pts_weekday}pts · Vie-Sáb: {s.pts_weekend}pts</span>}
-        {!s && !editing && <span style={{ color: T4, fontSize: 10, marginLeft: 8 }}>(no configurada — usará <span style={{ color: "#fbbf24" }}>Oro</span> como default)</span>}
+        <span style={{ color: T4, fontSize: 10, marginLeft: 8 }}>
+          {totalRanges === 0 ? "(sin rangos — usará Oro como default)" : `${totalRanges} rango${totalRanges > 1 ? "s" : ""}`}
+        </span>
       </div>
-      <div style={{ display: "flex", gap: 5 }}>
-        <Btn label={editing ? "Cancelar" : s ? "Editar" : "+ Agregar"} variant="ghost" small onClick={() => setEditing(e => !e)} />
-        {s && !editing && <Btn label="Quitar" variant="danger" small onClick={() => {
-          if (s.id && s.id < 1e9 && removeSeasonRange) removeSeasonRange(s.id);
-          setEditU(u => ({ ...u, seasons: u.seasons.filter(x => (x.season || x.id) !== meta.id) }));
-        }} />}
-      </div>
+      <Btn label="+ Agregar rango" variant="ghost" small onClick={() => { setAdding(true); setAddForm(emptyForm); }} />
     </div>
-    {editing && <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr 1fr", gap: 8 }}>
-      <Inp label="Inicio Mes" value={sForm.sm} onChange={v => setSForm(f => ({ ...f, sm: +v }))} opts={MONTHS_CONF.map((m, i) => ({ v: i+1, l: m }))} />
-      <Inp label="Inicio Día" value={sForm.sd} onChange={v => setSForm(f => ({ ...f, sd: +v }))} type="number" />
-      <Inp label="Fin Mes" value={sForm.em} onChange={v => setSForm(f => ({ ...f, em: +v }))} opts={MONTHS_CONF.map((m, i) => ({ v: i+1, l: m }))} />
-      <Inp label="Fin Día" value={sForm.ed} onChange={v => setSForm(f => ({ ...f, ed: +v }))} type="number" />
-      <Inp label="Pts Dom-Jue" value={sForm.wd} onChange={v => setSForm(f => ({ ...f, wd: +v }))} type="number" />
-      <Inp label="Pts Vie-Sáb" value={sForm.we} onChange={v => setSForm(f => ({ ...f, we: +v }))} type="number" />
-      <div style={{ gridColumn: "1/-1", display: "flex", justifyContent: "flex-end" }}>
-        <Btn label="Guardar temporada" variant="success" small onClick={() => {
-          const newS = { id: s?.id || Date.now(), season: meta.id, start_month: sForm.sm, start_day: sForm.sd, end_month: sForm.em, end_day: sForm.ed, pts_weekday: sForm.wd, pts_weekend: sForm.we };
-          setEditU(u => ({ ...u, seasons: [...(u.seasons || []).filter(x => (x.season || x.id) !== meta.id), newS] }));
-          if (saveSeasonRange) saveSeasonRange(editU.id, meta.id, sForm.sm, sForm.sd, sForm.em, sForm.ed, sForm.wd, sForm.we);
-          setEditing(false);
+
+    {/* Rangos existentes */}
+    {ranges.map(r => {
+      const isEditing = editingId === r.id;
+      return (<div key={r.id} style={{ background: BG2, borderRadius: 6, padding: "7px 9px", marginBottom: 5, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+        {!isEditing ? <>
+          <span style={{ color: T2, fontSize: 11, flex: 1 }}>
+            {MONTHS_CONF[(r.start_month||1)-1]} {r.start_day} — {MONTHS_CONF[(r.end_month||12)-1]} {r.end_day}
+            <span style={{ color: T4, marginLeft: 8 }}>Dom-Jue: {r.pts_weekday}pts · Vie-Sáb: {r.pts_weekend}pts</span>
+          </span>
+          <Btn label="Editar" variant="ghost" small onClick={() => { setEditingId(r.id); setEditForm({ sm: r.start_month, sd: r.start_day, em: r.end_month, ed: r.end_day, wd: r.pts_weekday || 0, we: r.pts_weekend || 0 }); }} />
+          <Btn label="✕" variant="danger" small onClick={() => {
+            if (r.id && r.id < 1e9 && removeSeasonRange) removeSeasonRange(r.id);
+            setEditU(u => ({ ...u, seasons: u.seasons.filter(x => x.id !== r.id) }));
+          }} />
+        </> : <>
+          <RangeFormInline form={editForm} setForm={setEditForm} />
+          <Btn label="Guardar" variant="success" small onClick={() => {
+            const updated = { ...r, start_month: editForm.sm, start_day: editForm.sd, end_month: editForm.em, end_day: editForm.ed, pts_weekday: editForm.wd, pts_weekend: editForm.we };
+            setEditU(u => ({ ...u, seasons: u.seasons.map(x => x.id === r.id ? updated : x) }));
+            if (saveSeasonRange) saveSeasonRange(editU.id, meta.id, editForm.sm, editForm.sd, editForm.em, editForm.ed, editForm.wd, editForm.we, r.id < 1e9 ? r.id : null);
+            setEditingId(null);
+          }} />
+          <Btn label="Cancelar" variant="ghost" small onClick={() => setEditingId(null)} />
+        </>}
+      </div>);
+    })}
+
+    {/* Formulario de agregar nuevo rango */}
+    {adding && <div style={{ background: BG2, borderRadius: 6, padding: "9px 10px", marginTop: 5 }}>
+      <div style={{ fontSize: 9, color: meta.color, textTransform: "uppercase", marginBottom: 6, fontWeight: 700 }}>Nuevo rango — {meta.name}</div>
+      <RangeFormInline form={addForm} setForm={setAddForm} />
+      <div style={{ display: "flex", gap: 6, marginTop: 8, justifyContent: "flex-end" }}>
+        <Btn label="Cancelar" variant="ghost" small onClick={() => setAdding(false)} />
+        <Btn label="Agregar rango" variant="success" small onClick={() => {
+          const newR = { id: Date.now(), season: meta.id, unit_id: editU.id, start_month: addForm.sm, start_day: addForm.sd, end_month: addForm.em, end_day: addForm.ed, pts_weekday: addForm.wd, pts_weekend: addForm.we };
+          setEditU(u => ({ ...u, seasons: [...(u.seasons || []), newR] }));
+          if (saveSeasonRange) saveSeasonRange(editU.id, meta.id, addForm.sm, addForm.sd, addForm.em, addForm.ed, addForm.wd, addForm.we, null);
+          setAdding(false);
         }} />
       </div>
     </div>}
+  </div>);
+}
+
+// Formulario inline de rango de fechas
+function RangeFormInline({ form, setForm }) {
+  return (<div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr 1fr", gap: 6, flex: 1 }}>
+    <Inp label="Inicio Mes" value={form.sm} onChange={v => setForm(f => ({ ...f, sm: +v }))} opts={MONTHS_CONF.map((m, i) => ({ v: i+1, l: m }))} />
+    <Inp label="Día" value={form.sd} onChange={v => setForm(f => ({ ...f, sd: +v }))} type="number" />
+    <Inp label="Fin Mes" value={form.em} onChange={v => setForm(f => ({ ...f, em: +v }))} opts={MONTHS_CONF.map((m, i) => ({ v: i+1, l: m }))} />
+    <Inp label="Día" value={form.ed} onChange={v => setForm(f => ({ ...f, ed: +v }))} type="number" />
+    <Inp label="Dom-Jue pts" value={form.wd} onChange={v => setForm(f => ({ ...f, wd: +v }))} type="number" />
+    <Inp label="Vie-Sáb pts" value={form.we} onChange={v => setForm(f => ({ ...f, we: +v }))} type="number" />
   </div>);
 }
 
@@ -3757,9 +3794,13 @@ export default function App() {
   };
 
   // Guardar rango de temporada de unidad
-  const saveSeasonRange = async (unitId, season, startMonth, startDay, endMonth, endDay, ptsWeekday, ptsWeekend) => {
+  const saveSeasonRange = async (unitId, season, startMonth, startDay, endMonth, endDay, ptsWeekday, ptsWeekend, existingId) => {
     try {
-      await upsertUnitSeasonRange(unitId, season, startMonth, startDay, endMonth, endDay, ptsWeekday, ptsWeekend);
+      if (existingId && existingId < 1e9) {
+        await updateUnitSeasonRange(existingId, startMonth, startDay, endMonth, endDay, ptsWeekday, ptsWeekend);
+      } else {
+        await insertUnitSeasonRange(unitId, season, startMonth, startDay, endMonth, endDay, ptsWeekday, ptsWeekend);
+      }
       await loadAll();
     } catch (e) {
       console.error('Error guardando temporada:', e);
