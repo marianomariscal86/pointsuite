@@ -2606,9 +2606,9 @@ function TeamView({ users, setUsers, clients, setClients, payments, reservations
   };
   const doAssign = async () => {
     if (!agt || !selC.length) return;
-    // Optimistic update
+    // Optimistic update with string ID
     setClients(cs => cs.map(c => selC.includes(c.id) ? { ...c, assignedGestor: String(agt) } : c));
-    // Save batch to DB
+    // Save batch to DB (agt is now a numeric ID as string)
     if (onAssignGestor) await onAssignGestor(selC, +agt);
     setSelC([]); setAgt("");
   };
@@ -2655,12 +2655,12 @@ function TeamView({ users, setUsers, clients, setClients, payments, reservations
     {ttab === "assign" && <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
       <div style={{ background: BG2, border: `1px solid ${BD}`, borderRadius: 11, padding: 16 }}>
         <Sec t="Asignar Cuentas" />
-        <div style={{ marginBottom: 9 }}><Inp label="Gestor destino" value={agt} onChange={setAgt} opts={[{ v: "", l: "— Seleccionar —" }, ...gestors.filter(g => g.active !== false).map(g => ({ v: g.username, l: g.name }))]} /></div>
+        <div style={{ marginBottom: 9 }}><Inp label="Gestor destino" value={agt} onChange={setAgt} opts={[{ v: "", l: "— Seleccionar —" }, ...gestors.filter(g => g.active !== false).map(g => ({ v: String(g.id), l: g.name }))]} /></div>
         <div style={{ fontSize: 9, color: T4, textTransform: "uppercase", marginBottom: 5 }}>Seleccionar clientes</div>
         <div style={{ maxHeight: 280, overflowY: "auto" }}>
           {clients.map(c => (<div key={c.id} onClick={() => setSelC(s => s.includes(c.id) ? s.filter(x => x !== c.id) : [...s, c.id])} style={{ padding: "6px 9px", borderBottom: `1px solid ${BG3}`, cursor: "pointer", background: selC.includes(c.id) ? B + "20" : "transparent", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div><span style={{ color: T1, fontSize: 12, fontWeight: selC.includes(c.id) ? 700 : 400 }}>{c.name}</span><span style={{ color: T4, fontSize: 9, marginLeft: 7 }}>{c.contractNo}</span></div>
-            <span style={{ color: P, fontSize: 9 }}>{c.assignedGestor || "sin asignar"}</span>
+            <span style={{ color: P, fontSize: 9 }}>{gestors.find(g => String(g.id) === String(c.assignedGestor))?.name || "sin asignar"}</span>
           </div>))}
         </div>
         <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -2671,7 +2671,7 @@ function TeamView({ users, setUsers, clients, setClients, payments, reservations
       <div style={{ background: BG2, border: `1px solid ${BD}`, borderRadius: 11, padding: 16 }}>
         <Sec t="Cuentas por Gestor" />
         {gestors.map(g => {
-          const gC = clients.filter(c => c.assignedGestor === g.username); return (<div key={g.id} style={{ marginBottom: 12 }}>
+          const gC = clients.filter(c => String(c.assignedGestor) === String(g.id)); return (<div key={g.id} style={{ marginBottom: 12 }}>
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}><span style={{ color: g.color, fontWeight: 700, fontSize: 12 }}>{g.name}</span><span style={{ color: T4, fontSize: 10 }}>{gC.length} cuentas</span></div>
             {gC.map(c => (<div key={c.id} style={{ padding: "4px 7px", background: BG3, borderRadius: 4, marginBottom: 2, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <span style={{ color: T2, fontSize: 11 }}>{c.name}</span>
@@ -3684,11 +3684,23 @@ export default function App() {
   const assignGestor = async (clientIds, gestorUserId) => {
     try {
       const ids = Array.isArray(clientIds) ? clientIds : [clientIds];
-      // Update all sequentially, single loadAll at the end
+      // Update all in BD sequentially
       for (const cid of ids) {
         await updateClient(cid, { assigned_gestor_id: gestorUserId });
       }
-      await loadAll();
+      // Silent refresh of only clients (no full loadAll to avoid resetting tab state)
+      const freshClients = await fetchClients();
+      if (freshClients.length > 0) {
+        const dbCondonations2 = condonations; // use cached
+        const dynC = freshClients.map(c => {
+          const desg = getMaintDesglose(c, payments, pp, dbCondonations2);
+          const dyn = desg.reduce((a, d) => a + d.pendienteMXN, 0);
+          const paidByYear = getPaidPtsByYear(c, payments);
+          const availPaidPts = (paidByYear[CY] || 0) + (paidByYear[CY + 1] || 0);
+          return { ...c, balance: dyn, paidPoints: availPaidPts };
+        });
+        setClients(dynC);
+      }
     } catch (e) {
       console.error(e); alert('Error: ' + (e.message || JSON.stringify(e)));
     }
