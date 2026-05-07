@@ -355,9 +355,12 @@ export async function fetchPromises() {
     promiseDate: p.promise_date,
     amount: parseFloat(p.amount_usd || 0),
     note: p.note,
+    concept: p.concept || 'maintenance',
     status: p.status,
+    gestorId: p.gestor_id,
     gestorUsername: p.users?.username,
     gestorName: p.users?.full_name,
+    fulfilledAt: p.fulfilled_at,
     createdAt: p.created_at?.slice(0, 10),
   }));
 }

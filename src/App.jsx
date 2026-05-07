@@ -179,8 +179,8 @@ const mkE = (label, email, active = true) => ({ label, email, active });
 const mkA = (label, text, active = true) => ({ label, text, active });
 const mkC = (text, by, date) => ({ id: Math.random(), text, by, date });
 const RM = { superadmin: { l: "Super Admin", c: B }, admin: { l: "Admin", c: Y }, cajero: { l: "Cajero", c: G }, gestor: { l: "Gestor", c: P } };
-const RT = { superadmin: ["dash", "clients", "cashier", "res", "col", "reports", "cobranza", "config", "pmethods", "comp", "users", "special", "legacy"], admin: ["dash", "clients", "reports", "cobranza", "config", "team", "contracts", "courtesies", "ps", "special", "legacy"], cajero: ["cashier", "cobranza", "clients", "ps"], gestor: ["res", "col", "cashier", "clients", "ec", "ps"] };
-const ATABS = [{ id: "dash", l: "Dashboard", i: "◈" }, { id: "clients", l: "Clientes", i: "◉" }, { id: "cashier", l: "Caja", i: "◐" }, { id: "res", l: "Reservaciones", i: "◫" }, { id: "col", l: "Cobranzas", i: "◎" }, { id: "reports", l: "Reportes", i: "◧" }, { id: "cobranza", l: "Rep. Cobranza", i: "◑" }, { id: "config", l: "Config", i: "◬" }, { id: "pmethods", l: "Medios de Pago", i: "◆" }, { id: "comp", l: "Sueldos", i: "◇" }, { id: "users", l: "Usuarios", i: "◭" }, { id: "team", l: "Mi Equipo", i: "◩" }, { id: "contracts", l: "Contratos", i: "◪" }, { id: "courtesies", l: "Cortesías", i: "◤" }, { id: "ec", l: "Mi Estado de Cuenta", i: "◊" }, { id: "special", l: "Gestión Especial", i: "◈" }, { id: "legacy", l: "Alta Contratos", i: "⊕" }, { id: "ps", l: "Venta Puntos", i: "◥" }];
+const RT = { superadmin: ["dash", "clients", "cashier", "res", "col", "reports", "cobranza", "config", "pmethods", "comp", "users", "special", "legacy"], admin: ["dash", "clients", "reports", "cobranza", "config", "team", "contracts", "courtesies", "ps", "special", "legacy"], cajero: ["cashier", "cobranza", "clients", "ps"], gestor: ["promesas", "res", "col", "cashier", "clients", "ec", "ps"] };
+const ATABS = [{ id: "promesas", l: "Mis Promesas", i: "★" }, { id: "dash", l: "Dashboard", i: "◈" }, { id: "clients", l: "Clientes", i: "◉" }, { id: "cashier", l: "Caja", i: "◐" }, { id: "res", l: "Reservaciones", i: "◫" }, { id: "col", l: "Cobranzas", i: "◎" }, { id: "reports", l: "Reportes", i: "◧" }, { id: "cobranza", l: "Rep. Cobranza", i: "◑" }, { id: "config", l: "Config", i: "◬" }, { id: "pmethods", l: "Medios de Pago", i: "◆" }, { id: "comp", l: "Sueldos", i: "◇" }, { id: "users", l: "Usuarios", i: "◭" }, { id: "team", l: "Mi Equipo", i: "◩" }, { id: "contracts", l: "Contratos", i: "◪" }, { id: "courtesies", l: "Cortesías", i: "◤" }, { id: "ec", l: "Mi Estado de Cuenta", i: "◊" }, { id: "special", l: "Gestión Especial", i: "◈" }, { id: "legacy", l: "Alta Contratos", i: "⊕" }, { id: "ps", l: "Venta Puntos", i: "◥" }];
 const INIT_U = [
   { id: 1, username: "superadmin", password: "admin", role: "superadmin", name: "Super Administrador", color: B, salary: 0, commissions: { collection: 0 }, active: true },
   { id: 2, username: "admin1", password: "admin", role: "admin", name: "Carmen Ríos", color: Y, salary: 5000, commissions: { collection: 0.015 }, active: true },
@@ -599,9 +599,10 @@ function CommentsPanel({ selC, cu, onAddComment }) {
 }
 
 // ── CLIENTS VIEW ─────────────────────────────────────────────────────────────
-function ClientsView({ clients, setClients, pp, cu, payments, reservations, users, condonations, onGoToCashier, onGoToRes, onSaveClient, onAddPhone, onSetPhoneActive, onAddEmail, onSetEmailActive, onAddAddress, onSetAddressActive, onAddComment, onSaveSavedPoints }) {
+function ClientsView({ clients, setClients, pp, cu, payments, reservations, users, condonations, fxRate, onGoToCashier, onGoToRes, onSaveClient, onAddPhone, onSetPhoneActive, onAddEmail, onSetEmailActive, onAddAddress, onSetAddressActive, onAddComment, onSaveSavedPoints, onSavePromise }) {
   const [srch, setSrch] = useState(""), [filt, setFilt] = useState("All"), [sortByMora, setSortByMora] = useState(false), [sel, setSel] = useState(null), [modal, setModal] = useState(null), [dtab, setDtab] = useState("info");
   const [saveModal, setSaveModal] = useState(null);
+  const [promiseModal, setPromiseModal] = useState(null); // cliente al que crear promesa
   const canEdit = ["superadmin", "admin"].includes(cu.role);
   const en = useMemo(() => clients.map(c => { const d = dOvr(c.dueDate); const cl = getClientStatus(c, payments, condonations); const interest = cInt(c.balance, d, cl.r * 12); return { ...c, dOvr: d, cls: cl, interest, totalOwed: c.balance + interest, ph: (c.phones || []).find(p => p.active !== false)?.number || "—" }; }), [clients, payments, condonations]);
   const filtered = useMemo(() => {
@@ -638,6 +639,7 @@ function ClientsView({ clients, setClients, pp, cu, payments, reservations, user
         if (onSaveSavedPoints) onSaveSavedPoints(saveModal.id, sp.points, sp.maintYear, sp.note);
         setSaveModal(null);
       }} />}
+      {promiseModal && <PromiseModal client={promiseModal} fxRate={fxRate} cu={cu} onClose={() => setPromiseModal(null)} onSave={pr => { if (onSavePromise) onSavePromise(pr); }} />}
       <div style={{ display: "flex", gap: 8, marginBottom: 11, flexWrap: "wrap" }}>
         <input placeholder="Nombre, Nº contrato, teléfono, email…" value={srch} onChange={e => setSrch(e.target.value)} style={{ ...IS, flex: 1, minWidth: 200 }} />
         <select value={filt} onChange={e => setFilt(e.target.value)} style={{ ...IS, width: 130 }}>{["All", "Active", "Partial", "Delinquent", "Morosos", "Cancelados"].map(s => <option key={s}>{s}</option>)}</select>
@@ -667,9 +669,10 @@ function ClientsView({ clients, setClients, pp, cu, payments, reservations, user
         <span style={{ color: T1, fontWeight: 700, fontSize: 13 }}>{selC.name}</span>
         <Btn label="✕" variant="ghost" small onClick={() => setSel(null)} />
       </div>
-      {(onGoToCashier || onGoToRes) && <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+      {(onGoToCashier || onGoToRes) && <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
         {onGoToCashier && <Btn label="💳 Pagar" onClick={() => onGoToCashier(selC.id)} />}
         {onGoToRes && <Btn label="🏨 Reservar" variant="purple" onClick={() => onGoToRes(selC.id)} />}
+        {onSavePromise && <Btn label="★ Promesa" variant="success" onClick={() => setPromiseModal(selC)} />}
       </div>}
       <div style={{ display: "flex", gap: 4, marginBottom: 12, flexWrap: "wrap" }}>
         {[["info", "Info"], ["contacts", "Contacto"], ["contract", "Contrato"], ["comments", "Comentarios"], ["txhistory", "Cobros"], ["reshistory", "Reservas"]].map(([id, lbl]) => (
@@ -827,7 +830,7 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
     const match = cr.find(r => r.id === concept || r.id === concept.replace('point_purchase','point_sale'));
     return (match?.pct || 0) / 100;
   };
-  const [sid, setSid] = useState(preselClientId || null), [ptype, setPtype] = useState("maintenance"), [mantAmt, setMantAmt] = useState(""), [moraAmt, setMoraAmt] = useState(""), [note, setNote] = useState(""), [ok, setOk] = useState(null);
+  const [sid, setSid] = useState(preselClientId || null), [ptype, setPtype] = useState("maintenance"), [montoTotal, setMontoTotal] = useState(""), [note, setNote] = useState(""), [ok, setOk] = useState(null);
   const [validateMid, setValidateMid] = useState("1"); // Medio de pago al validar (cajero)
   const [proposalMid, setProposalMid] = useState(""); // Medio de pago al proponer (gestor)
   // Auto-seleccionar primer método si no hay uno
@@ -838,61 +841,97 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
   const d = client ? dOvr(client.dueDate) : 0;
   const cls = client ? getClientStatus(client, payments, condonations) : { l: "Al corriente", c: "#22c55e", r: 0 };
   const interest = client ? cInt(client.balance, d, cls.r * 12) : 0;
-  const mantAmtN = +mantAmt || 0, moraAmtN = +moraAmt || 0;
+  const montoN = +montoTotal || 0;
   // Año de mantenimiento a pagar para el cliente seleccionado (considera condonados como cubiertos)
   const maintYear = client ? getMaintYear(client, payments, condonations) : CY;
-  // Es prepago SOLO si el mantenimiento del año en curso está completamente pagado
-  // y por lo tanto el siguiente pago corresponde al año siguiente
-  // Es prepago SOLO si maintYear es exactamente CY+1 (siguiente año, no más allá).
-  // Si maintYear > CY+1 significa que ya pagó el siguiente año y no se permite prepagar más.
   const isPrepago = client ? maintYear === CY + 1 : false;
   const yaPrepagado = client ? maintYear > CY + 1 : false;
   const maintPointExpiry = getMaintPointExpiry(maintYear);
   const preloadedMantAmt = client ? Math.round(client.annualPoints * pp) : 0;
 
+  // ── REPARTO AUTOMÁTICO DEL MONTO ────────────────────────────────────
+  // Lógica: aplicar primero a mantenimiento (al máximo posible), sobrante a moratorios
+  // Si el monto no alcanza para cubrir mant. completo, mostrar 100% descuento en moratorios
+  // y descuento variable en mantenimiento (siempre respetando reglas de descuento máximo)
+  const allocation = useMemo(() => {
+    if (!client || montoN <= 0) return { mantAmt: 0, moraAmt: 0, mantDisc: 0, moraDisc: 0, valid: false, reason: "Sin monto" };
+
+    const isPrepagoPay = ptype === "prepago_maintenance";
+    const maxDiscPctMant = (isPrepagoPay ? 0.30 : 0.20) - (costPct / 100);
+
+    if (isPrepagoPay) {
+      // Prepago: monto cubre mant del año siguiente con descuento opcional
+      const montoCompleto = preloadedMantAmt;
+      const descMant = Math.max(0, montoCompleto - montoN);
+      const descMaxPermitido = montoCompleto * maxDiscPctMant;
+      if (montoN > montoCompleto) return { mantAmt: 0, moraAmt: 0, mantDisc: 0, moraDisc: 0, valid: false, reason: `El monto excede el mantenimiento prepago ($${fMXN(montoCompleto)})` };
+      if (descMant > descMaxPermitido) return { mantAmt: montoN, moraAmt: 0, mantDisc: descMant, moraDisc: 0, valid: false, reason: `Descuento ${((descMant/montoCompleto)*100).toFixed(1)}% excede máximo ${(maxDiscPctMant*100).toFixed(1)}%` };
+      return { mantAmt: montoN, moraAmt: 0, mantDisc: descMant, moraDisc: 0, valid: true, reason: "" };
+    }
+
+    // Caso normal: mantenimiento + posible mora
+    const saldoMant = client.balance;
+    const saldoMora = interest;
+
+    if (saldoMant === 0 && saldoMora === 0) {
+      return { mantAmt: 0, moraAmt: 0, mantDisc: 0, moraDisc: 0, valid: false, reason: "Cliente al corriente — no hay deuda que cobrar" };
+    }
+
+    let mantAmt, moraAmt, mantDisc, moraDisc;
+
+    if (montoN >= saldoMant) {
+      // El monto cubre TODO el mantenimiento. El sobrante va a moratorios.
+      mantAmt = saldoMant; mantDisc = 0;
+      const sobrante = montoN - saldoMant;
+      moraAmt = Math.min(sobrante, saldoMora);
+      moraDisc = Math.max(0, saldoMora - moraAmt); // descuento de mora si no alcanza para cubrirla toda
+    } else {
+      // El monto NO alcanza para cubrir mant completo
+      // → 100% descuento en moratorios y aplicar descuento variable en mant
+      moraAmt = 0; moraDisc = saldoMora; // toda la mora se condona
+      mantAmt = montoN; mantDisc = saldoMant - montoN;
+    }
+
+    // Validar reglas de descuento
+    const descMantPct = saldoMant > 0 ? mantDisc / saldoMant : 0;
+    if (descMantPct > maxDiscPctMant) {
+      return { mantAmt, moraAmt, mantDisc, moraDisc, valid: false, reason: `Descuento mantenimiento ${(descMantPct*100).toFixed(1)}% excede máximo ${(maxDiscPctMant*100).toFixed(1)}% (con ${costPct}% de costo financiero)` };
+    }
+
+    return { mantAmt, moraAmt, mantDisc, moraDisc, valid: true, reason: "" };
+  }, [client, montoN, ptype, costPct, preloadedMantAmt, interest]);
+
   // Auto-precargar monto y tipo cuando se selecciona un cliente
   useEffect(() => {
-    if (!client) { setMantAmt(""); setMoraAmt(""); setPtype("maintenance"); return; }
+    if (!client) { setMontoTotal(""); setPtype("maintenance"); return; }
     if (yaPrepagado) {
-      setPtype("maintenance"); setMantAmt(""); setMoraAmt("");
+      setPtype("maintenance"); setMontoTotal("");
       return;
     }
     if (isPrepago) {
       setPtype("prepago_maintenance");
-      setMantAmt(String(preloadedMantAmt));
+      setMontoTotal(String(preloadedMantAmt));
     } else {
       setPtype("maintenance");
-      setMantAmt("");
+      // Sugerir saldo + mora como total a cobrar
+      const sugerido = (client.balance || 0) + (interest || 0);
+      setMontoTotal(sugerido > 0 ? String(Math.round(sugerido)) : "");
     }
   }, [sid]); // eslint-disable-line
 
   const submit = () => {
-    if (!client || (mantAmtN <= 0 && moraAmtN <= 0)) return;
-    if (yaPrepagado) return; // No permitir más pagos si ya prepagó CY+1
-    if (!proposalMid) return; // Debe tener medio de pago seleccionado
+    if (!client || montoN <= 0) return;
+    if (yaPrepagado) return;
+    if (!proposalMid) return;
+    if (!allocation.valid) { alert(allocation.reason || "Datos incompletos"); return; }
+
     const isPrepagoPay = ptype === "prepago_maintenance";
-    // Descuento máximo permitido depende del tipo de pago y el medio
-    // Mantenimiento normal/vencido: 20% - cost_pct
-    // Prepago: 30% - cost_pct
-    const maxDiscPct = (isPrepagoPay ? 0.30 : 0.20) - (costPct / 100);
-    if (isPrepagoPay) {
-      const montoCompleto = Math.round(client.annualPoints * pp);
-      const descuento = Math.max(0, montoCompleto - mantAmtN);
-      if (descuento > montoCompleto * maxDiscPct) return; // Bloqueo descuento excedido
-      if (mantAmtN > montoCompleto) return;
-    } else {
-      const saldoMXN = client.balance;
-      const moraMXN = interest;
-      const autoDiscMant = Math.max(0, saldoMXN - mantAmtN);
-      const autoDiscMora = Math.max(0, moraMXN - moraAmtN);
-      if (autoDiscMant > saldoMXN * maxDiscPct || autoDiscMora > moraMXN) return;
-    }
-    const totalCobrar = mantAmtN + moraAmtN;
+    const totalCobrar = allocation.mantAmt + allocation.moraAmt;
     const prop = {
       id: Date.now(), clientId: client.id, clientName: client.name, contractNo: client.contractNo,
-      ptype: isPrepagoPay ? "maintenance" : ptype,
-      mantAmt: mantAmtN, moraAmt: moraAmtN,
-      mantDisc: 0, moraDisc: 0,
+      ptype: isPrepagoPay ? "maintenance" : "maintenance",
+      mantAmt: allocation.mantAmt, moraAmt: allocation.moraAmt,
+      mantDisc: allocation.mantDisc, moraDisc: allocation.moraDisc,
       totalACobrar: totalCobrar, submittedBy: cu.username, submittedAt: new Date().toISOString(),
       note: isPrepagoPay ? `[PREPAGO] Mantenimiento adelantado año ${maintYear}${note ? " — " + note : ""}` : note,
       status: "Por Validar",
@@ -901,7 +940,7 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
     };
     setPendingPayments(ps => [...ps, prop]);
     setOk({ name: client.name, total: totalCobrar, id: prop.id });
-    setSid(null); setMantAmt(""); setMoraAmt(""); setNote("");
+    setSid(null); setMontoTotal(""); setNote("");
     // Guardar en Supabase
     if (onSavePending) onSavePending(prop).catch(console.error);
   };
@@ -1058,7 +1097,7 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
         <Inp
           label="Concepto"
           value={ptype}
-          onChange={v => { setPtype(v); if (v === "prepago_maintenance") setMantAmt(String(preloadedMantAmt)); else if (v !== "prepago_maintenance") setMantAmt(""); }}
+          onChange={v => { setPtype(v); if (v === "prepago_maintenance") setMontoTotal(String(preloadedMantAmt)); else if (v !== "prepago_maintenance") setMontoTotal(""); }}
           opts={PT.filter(t => t.v !== "prepago_maintenance" || isPrepago).map(t => ({ v: t.v, l: t.l }))}
         />
 
@@ -1111,9 +1150,9 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
             <div style={{ fontSize: 9, color: "#10b981", marginBottom: 8 }}>
               ✓ Los {fP(client.annualPoints)} estarán disponibles <b>inmediatamente</b> para hacer reservaciones y vencerán el <b>{maintPointExpiry}</b>.
             </div>
-            <Inp label={`Monto a cobrar (MXN $) — Mantenimiento Año ${nextMaintYear}`} value={mantAmt} onChange={setMantAmt} type="number" />
-            {mantAmtN > 0 && mantAmtN < montoCompleto && (() => {
-              const descuento = montoCompleto - mantAmtN;
+            <Inp label={`Monto a cobrar (MXN $) — Mantenimiento Año ${nextMaintYear}`} value={montoTotal} onChange={setMontoTotal} type="number" />
+            {montoN > 0 && montoN < montoCompleto && (() => {
+              const descuento = montoCompleto - montoN;
               const maxPct = 0.30 - (costPct / 100);
               const maxDesc = montoCompleto * maxPct;
               const exceso = descuento > maxDesc;
@@ -1123,7 +1162,7 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
                   : `⚠ Monto completo: ${fMXN(montoCompleto)}. Descuento aplicado: ${fMXN(descuento)} (${((descuento / montoCompleto) * 100).toFixed(1)}% de ${(maxPct * 100).toFixed(1)}% permitido).`}
               </div>;
             })()}
-            {mantAmtN > montoCompleto && <div style={{ fontSize: 9, color: R, marginTop: 3, fontWeight: 700 }}>
+            {montoN > montoCompleto && <div style={{ fontSize: 9, color: R, marginTop: 3, fontWeight: 700 }}>
               ⛔ El monto excede el costo del mantenimiento ({fMXN(montoCompleto)}).
             </div>}
           </div>;
@@ -1169,87 +1208,69 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
                 <div style={{ fontSize: 8, color: T4, marginTop: 2 }}>El pago se aplicará al año más antiguo primero.</div>
               </div>}
             </div>}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-              <div>
-                <Inp label="Monto Mantenimiento a pagar (MXN $)" value={mantAmt} onChange={setMantAmt} type="number" />
-                {mantAmtN > 0 && <div style={{ fontSize: 9, color: T4, marginTop: 2 }}>≈ {fUSD(mantAmtN / fx2)} USD</div>}
-              </div>
-              <div>
-                <Inp label="Monto Moratorios a pagar (MXN $)" value={moraAmt} onChange={setMoraAmt} type="number" />
-                {moraAmtN > 0 && <div style={{ fontSize: 9, color: T4, marginTop: 2 }}>≈ {fUSD(moraAmtN / fx2)} USD</div>}
-              </div>
+            <div>
+              <Inp label="Monto total a cobrar (MXN $)" value={montoTotal} onChange={setMontoTotal} type="number" />
+              {montoN > 0 && <div style={{ fontSize: 9, color: T4, marginTop: 2 }}>≈ {fUSD(montoN / fx2)} USD</div>}
+              {client && (client.balance + interest) > 0 && <div style={{ fontSize: 9, color: T4, marginTop: 3 }}>
+                Saldo total adeudado: <b style={{ color: R }}>{fMXN(client.balance + interest)}</b>
+                {" — "}Mant: {fMXN(client.balance)} · Mora: {fMXN(interest)}
+              </div>}
             </div>
           </>;
         })()}
-        {(mantAmtN > 0 || moraAmtN > 0) && client && (() => {
-          const saldoMXN = client.balance;
+        {/* Reparto automático del monto */}
+        {montoN > 0 && client && ptype !== "prepago_maintenance" && (() => {
+          const a = allocation;
+          const totalACobrar = a.mantAmt + a.moraAmt;
+          const totalDesc = a.mantDisc + a.moraDisc;
+          const saldoMant = client.balance;
           const moraMXN = interest;
-          const descMant = Math.max(0, saldoMXN - mantAmtN);
-          const descMora = Math.max(0, moraMXN - moraAmtN);
-          const maxMant = saldoMXN * 0.20;
-          const maxMora = moraMXN * 1.00; // 100% mora permitida
-          const exMant = descMant > maxMant;
-          const exMora = descMora > maxMora;
-          return <div style={{ background: BG3, borderRadius: 7, padding: "9px 11px", border: `1px solid ${exMant || exMora ? R : Y}22` }}>
-            <div style={{ fontSize: 9, color: Y, textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 7 }}>Descuentos calculados automáticamente</div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 6 }}>
-              <div>
-                <div style={{ fontSize: 8, color: T4, textTransform: "uppercase" }}>Descuento Mant. (máx 20%)</div>
-                <div style={{ color: exMant ? R : Y, fontWeight: 700 }}>{fMXN(descMant)} {descMant > 0 ? `(${((descMant / saldoMXN) * 100).toFixed(1)}%)` : ""}</div>
-                {exMant && <div style={{ color: R, fontSize: 9 }}>⚠ Excede máximo ({fMXN(maxMant)})</div>}
+          const maxDiscPctMant = 0.20 - (costPct / 100);
+          return <div style={{ background: BG3, borderRadius: 7, padding: "10px 12px", border: `1px solid ${a.valid ? G : R}33` }}>
+            <div style={{ fontSize: 9, color: a.valid ? G : R, textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 8, fontWeight: 700 }}>
+              {a.valid ? "✓ Reparto automático del monto" : "⛔ Reparto bloqueado"}
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+              <div style={{ background: BG2, borderRadius: 5, padding: "6px 8px" }}>
+                <div style={{ fontSize: 8, color: T4, textTransform: "uppercase" }}>Mantenimiento</div>
+                <div style={{ color: G, fontWeight: 700 }}>{fMXN(a.mantAmt)}</div>
+                <div style={{ fontSize: 8, color: T4 }}>de {fMXN(saldoMant)}</div>
+                {a.mantDisc > 0 && <div style={{ fontSize: 9, color: Y, marginTop: 2 }}>Desc: {fMXN(a.mantDisc)} ({((a.mantDisc/saldoMant)*100).toFixed(1)}%) · máx {(maxDiscPctMant*100).toFixed(1)}%</div>}
               </div>
-              <div>
-                <div style={{ fontSize: 8, color: T4, textTransform: "uppercase" }}>Descuento Mora (máx 100%)</div>
-                <div style={{ color: exMora ? R : Y, fontWeight: 700 }}>{fMXN(descMora)} {descMora > 0 && moraMXN > 0 ? `(${((descMora / moraMXN) * 100).toFixed(1)}%)` : ""}</div>
-                {exMora && <div style={{ color: R, fontSize: 9 }}>⚠ Excede máximo</div>}
+              <div style={{ background: BG2, borderRadius: 5, padding: "6px 8px" }}>
+                <div style={{ fontSize: 8, color: T4, textTransform: "uppercase" }}>Moratorios</div>
+                <div style={{ color: G, fontWeight: 700 }}>{fMXN(a.moraAmt)}</div>
+                <div style={{ fontSize: 8, color: T4 }}>de {fMXN(moraMXN)}</div>
+                {a.moraDisc > 0 && <div style={{ fontSize: 9, color: Y, marginTop: 2 }}>Desc: {fMXN(a.moraDisc)} ({moraMXN > 0 ? ((a.moraDisc/moraMXN)*100).toFixed(1) : 0}%)</div>}
               </div>
             </div>
-            <div style={{ fontSize: 9, color: T4 }}>Los descuentos se calculan automáticamente comparando el monto propuesto vs el saldo. Máx: 20% en mantenimiento, 100% en moratorios.</div>
+            {!a.valid && <div style={{ color: R, fontSize: 10, fontWeight: 700, marginTop: 4 }}>⛔ {a.reason}</div>}
           </div>;
         })()}
         <Inp label="Notas" value={note} onChange={setNote} />
       </div>
-      {mantAmtN + moraAmtN > 0 && client && ptype !== "prepago_maintenance" && (() => {
-        const saldoMXN = client.balance;
-        const moraMXN = interest;
-        const descMant2 = Math.max(0, saldoMXN - mantAmtN);
-        const descMora2 = Math.max(0, moraMXN - moraAmtN);
-        const maxMant2 = saldoMXN * 0.20;
-        const maxMora2 = moraMXN;
-        const exMant2 = descMant2 > maxMant2;
-        const exMora2 = descMora2 > maxMora2;
-        const totalMXN = mantAmtN + moraAmtN;
-        const saldoRes = Math.max(0, saldoMXN - mantAmtN);
+      {montoN > 0 && client && ptype !== "prepago_maintenance" && (() => {
+        const a = allocation;
+        const totalDesc = a.mantDisc + a.moraDisc;
+        const saldoRes = Math.max(0, (client.balance || 0) - a.mantAmt);
         return <div style={{ margin: "10px 0", padding: "10px", background: BG3, borderRadius: 7 }}>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 6, marginBottom: 6 }}>
-            {[["Total MXN", fMXN(totalMXN), T1], ["Desc. Total", fMXN(descMant2 + descMora2), Y], ["A cobrar MXN", fMXN(totalMXN), G], ["Saldo result. USD", fUSD(saldoRes / (fxRate?.rate || 17.5)), saldoRes > 0 ? R : G]].map(([l, v, c]) => (<div key={l}><div style={{ fontSize: 8, color: T4, textTransform: "uppercase" }}>{l}</div><div style={{ color: c, fontWeight: 700, fontSize: 11 }}>{v}</div></div>))}
+            {[["Total a cobrar", fMXN(a.mantAmt + a.moraAmt), T1], ["Desc. Total", fMXN(totalDesc), Y], ["Mant. cobrado", fMXN(a.mantAmt), G], ["Saldo result.", fMXN(saldoRes), saldoRes > 0 ? R : G]].map(([l, v, c]) => (<div key={l}><div style={{ fontSize: 8, color: T4, textTransform: "uppercase" }}>{l}</div><div style={{ color: c, fontWeight: 700, fontSize: 11 }}>{v}</div></div>))}
           </div>
-          {(exMant2 || exMora2) && <div style={{ color: R, fontSize: 10, fontWeight: 700 }}>⛔ No se puede enviar a caja: el descuento excede el máximo permitido. Aumenta el monto a cobrar.</div>}
+          {!a.valid && <div style={{ color: R, fontSize: 10, fontWeight: 700 }}>⛔ {a.reason}</div>}
         </div>;
       })()}
-      {mantAmtN > 0 && client && ptype === "prepago_maintenance" && <div style={{ margin: "10px 0", padding: "10px", background: "#10b98112", borderRadius: 7, border: "1px solid #10b98133" }}>
+      {montoN > 0 && client && ptype === "prepago_maintenance" && <div style={{ margin: "10px 0", padding: "10px", background: "#10b98112", borderRadius: 7, border: "1px solid #10b98133" }}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 6 }}>
-          {[["A cobrar MXN", fMXN(mantAmtN), G], ["Año pagado", String(maintYear), "#10b981"], ["Pts disponibles hasta", maintPointExpiry, Y]].map(([l, v, c]) => (<div key={l}><div style={{ fontSize: 8, color: T4, textTransform: "uppercase" }}>{l}</div><div style={{ color: c, fontWeight: 700, fontSize: 11 }}>{v}</div></div>))}
+          {[["A cobrar MXN", fMXN(montoN), G], ["Año pagado", String(maintYear), "#10b981"], ["Pts disponibles hasta", maintPointExpiry, Y]].map(([l, v, c]) => (<div key={l}><div style={{ fontSize: 8, color: T4, textTransform: "uppercase" }}>{l}</div><div style={{ color: c, fontWeight: 700, fontSize: 11 }}>{v}</div></div>))}
         </div>
       </div>}
       {(() => {
         const isPrepagoPay = ptype === "prepago_maintenance";
-        const maxDiscPct = (isPrepagoPay ? 0.30 : 0.20) - (costPct / 100);
         if (isPrepagoPay) {
-          const montoCompleto = client ? Math.round(client.annualPoints * pp) : 0;
-          const descuento = Math.max(0, montoCompleto - mantAmtN);
-          const excedeDesc = descuento > montoCompleto * maxDiscPct;
-          const excedeMax = mantAmtN > montoCompleto;
-          return <Btn label={`⭐ Enviar Prepago Año ${maintYear} a Caja${selectedPm ? ` (${selectedPm.name})` : ""}`} variant="success" onClick={submit} disabled={!client || mantAmtN <= 0 || excedeDesc || excedeMax || !proposalMid} />;
+          return <Btn label={`⭐ Enviar Prepago Año ${maintYear} a Caja${selectedPm ? ` (${selectedPm.name})` : ""}`} variant="success" onClick={submit} disabled={!client || montoN <= 0 || !allocation.valid || !proposalMid} />;
         }
-        const saldoMXN = client?.balance || 0;
-        const moraMXN = interest;
-        const descMant2 = Math.max(0, saldoMXN - mantAmtN);
-        const descMora2 = Math.max(0, moraMXN - moraAmtN);
-        const exMant2 = descMant2 > saldoMXN * maxDiscPct;
-        const exMora2 = descMora2 > moraMXN;
-        const blocked = exMant2 || exMora2;
-        return <Btn label={`Enviar a Caja para Validación${selectedPm ? ` (${selectedPm.name})` : ""}`} onClick={submit} disabled={!client || (mantAmtN <= 0 && moraAmtN <= 0) || blocked || !proposalMid} />;
+        return <Btn label={`Enviar a Caja para Validación${selectedPm ? ` (${selectedPm.name})` : ""}`} onClick={submit} disabled={!client || montoN <= 0 || !allocation.valid || !proposalMid} />;
       })()}
       <div style={{ fontSize: 9, color: T4, marginTop: 5 }}>Si el cajero no valida el pago antes del fin del día, la propuesta se cancela automáticamente.</div>
     </div>)}
@@ -2620,10 +2641,17 @@ function UsersView({ cu, users, setUsers, rc, onSaveUser }) {
     </tr>))} />
   </div>);
 }
-function TeamView({ users, setUsers, clients, setClients, payments, reservations, onAssignGestor, onCancelContract, onSaveUser, cu }) {
+function TeamView({ users, setUsers, clients, setClients, payments, reservations, condonations, onAssignGestor, onCancelContract, onSaveUser, cu }) {
   const [ttab, setTtab] = useState("list"), [modal, setModal] = useState(null), [form, setForm] = useState({}), [agt, setAgt] = useState(""), [selC, setSelC] = useState([]);
   const setF = k => v => setForm(f => ({ ...f, [k]: v }));
   const isSuperAdmin = cu?.role === "superadmin";
+  // Enriquecer clientes con cls, dOvr, interest para la segmentación
+  const enrichedClients = useMemo(() => clients.map(c => {
+    const d = dOvr(c.dueDate);
+    const cl = getClientStatus(c, payments, condonations);
+    const interest = cInt(c.balance, d, cl.r * 12);
+    return { ...c, dOvr: d, cls: cl, interest };
+  }), [clients, payments, condonations]);
   const gestors = users.filter(u => u.role === "gestor");
   const save = () => {
     const isNew = modal === "new";
@@ -2698,18 +2726,49 @@ function TeamView({ users, setUsers, clients, setClients, payments, reservations
         </div>
       </div>
       <div style={{ background: BG2, border: `1px solid ${BD}`, borderRadius: 11, padding: 16 }}>
-        <Sec t="Cuentas por Gestor" />
+        <Sec t="Cuentas por Gestor — Resumen por Concepto" />
         {gestors.map(g => {
-          const gC = clients.filter(c => String(c.assignedGestor) === String(g.id)); return (<div key={g.id} style={{ marginBottom: 12 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}><span style={{ color: g.color, fontWeight: 700, fontSize: 12 }}>{g.name}</span><span style={{ color: T4, fontSize: 10 }}>{gC.length} cuentas</span></div>
-            {gC.map(c => (<div key={c.id} style={{ padding: "4px 7px", background: BG3, borderRadius: 4, marginBottom: 2, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ color: T2, fontSize: 11 }}>{c.name}</span>
+          const gC = enrichedClients.filter(c => String(c.assignedGestor) === String(g.id));
+          // 1. Mantenimientos vencidos: saldo > 0 y status != "Promoción Prepago" y status != "Al corriente"
+          // 2. Moratorios: interés acumulado por días vencidos
+          // 3. Promoción: clientes con status "Promoción Prepago" o "Al corriente"
+          const cMaintVencidos = gC.filter(c => c.balance > 0).reduce((a, c) => a + (c.balance || 0), 0);
+          const cMoratorios = gC.filter(c => c.balance > 0 && c.dOvr > 0).reduce((a, c) => a + (c.interest || 0), 0);
+          const cPromocion = gC.filter(c => c.cls?.l === "Promoción Prepago" || c.cls?.l === "Al corriente").length;
+          const cConMora = gC.filter(c => c.balance > 0).length;
+          return (<div key={g.id} style={{ marginBottom: 16, padding: "12px 14px", background: BG3, borderRadius: 8, borderLeft: `3px solid ${g.color}` }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10, alignItems: "center" }}>
+              <span style={{ color: g.color, fontWeight: 700, fontSize: 13 }}>{g.name}</span>
+              <span style={{ color: T4, fontSize: 11 }}>{gC.length} cuenta{gC.length !== 1 ? "s" : ""} asignada{gC.length !== 1 ? "s" : ""}</span>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 10 }}>
+              <div style={{ background: R + "12", border: `1px solid ${R}33`, borderRadius: 6, padding: "8px 10px" }}>
+                <div style={{ fontSize: 8, color: T4, textTransform: "uppercase", marginBottom: 2 }}>Mantenimientos vencidos</div>
+                <div style={{ color: R, fontWeight: 800, fontSize: 14 }}>{f$(cMaintVencidos)}</div>
+                <div style={{ fontSize: 9, color: T4 }}>{cConMora} cuenta{cConMora !== 1 ? "s" : ""}</div>
+              </div>
+              <div style={{ background: Y + "12", border: `1px solid ${Y}33`, borderRadius: 6, padding: "8px 10px" }}>
+                <div style={{ fontSize: 8, color: T4, textTransform: "uppercase", marginBottom: 2 }}>Moratorios</div>
+                <div style={{ color: Y, fontWeight: 800, fontSize: 14 }}>{f$(cMoratorios)}</div>
+                <div style={{ fontSize: 9, color: T4 }}>intereses acumulados</div>
+              </div>
+              <div style={{ background: G + "12", border: `1px solid ${G}33`, borderRadius: 6, padding: "8px 10px" }}>
+                <div style={{ fontSize: 8, color: T4, textTransform: "uppercase", marginBottom: 2 }}>Promoción / Al corriente</div>
+                <div style={{ color: G, fontWeight: 800, fontSize: 14 }}>{cPromocion}</div>
+                <div style={{ fontSize: 9, color: T4 }}>cuenta{cPromocion !== 1 ? "s" : ""}</div>
+              </div>
+            </div>
+            {gC.map(c => (<div key={c.id} style={{ padding: "4px 7px", background: BG2, borderRadius: 4, marginBottom: 2, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div>
+                <span style={{ color: T2, fontSize: 11 }}>{c.name}</span>
+                <span style={{ color: c.cls?.c || T4, fontSize: 9, marginLeft: 6 }}>· {c.cls?.l || "—"}</span>
+              </div>
               <div style={{ display: "flex", gap: 6, alignItems: "center" }}><span style={{ color: c.balance > 0 ? R : G, fontSize: 10 }}>{f$(c.balance)}</span><Btn label="Quitar" variant="danger" small onClick={async () => {
                 setClients(cs => cs.map(x => x.id === c.id ? { ...x, assignedGestor: "" } : x));
                 if (onAssignGestor) await onAssignGestor([c.id], null);
               }} /></div>
             </div>))}
-            {gC.length === 0 && <div style={{ fontSize: 10, color: T4, padding: "4px 0" }}>Sin cuentas</div>}
+            {gC.length === 0 && <div style={{ fontSize: 10, color: T4, padding: "4px 0", textAlign: "center" }}>Sin cuentas asignadas</div>}
           </div>);
         })}
       </div>
@@ -3624,6 +3683,165 @@ function CobranzaReportView({ payments, pointSales, pms, users, cr, cu }) {
       </div>)}
   </div>);
 }
+// ── PROMESAS DEL GESTOR — Dashboard principal ────────────────────────────
+const CONCEPT_OPTS = [
+  { v: "maintenance", l: "Mantenimiento" },
+  { v: "moratorios", l: "Moratorios" },
+  { v: "prepago", l: "Mantenimiento Prepago" },
+  { v: "point_sale", l: "Venta de Puntos" },
+  { v: "cancellation_payment", l: "Pago de Cancelación" },
+];
+
+function PromisesView({ promises, clients, cu, users, fxRate, onValidate, onReschedule, onCancel, onGoToClient }) {
+  const isGestor = cu.role === "gestor";
+  const dbUser = users.find(u => u.username === cu.username);
+  const myId = dbUser?.id;
+
+  // Filtrar promesas del gestor (o todas si admin/superadmin)
+  const myPromises = isGestor
+    ? promises.filter(p => String(p.gestorId) === String(myId) && p.status === 'pending')
+    : promises.filter(p => p.status === 'pending');
+
+  const today = new Date().toISOString().slice(0, 10);
+
+  const overdue = myPromises.filter(p => p.promiseDate < today).sort((a,b) => a.promiseDate.localeCompare(b.promiseDate));
+  const todayP = myPromises.filter(p => p.promiseDate === today).sort((a,b) => (b.amount||0)-(a.amount||0));
+  const future = myPromises.filter(p => p.promiseDate > today).sort((a,b) => a.promiseDate.localeCompare(b.promiseDate));
+
+  const [selPr, setSelPr] = useState(null);
+  const [actionType, setActionType] = useState(null); // 'reschedule' | 'cancel'
+  const [newDate, setNewDate] = useState("");
+
+  const fx = fxRate?.rate || 17.5;
+  const conceptName = (c) => CONCEPT_OPTS.find(o => o.v === c)?.l || c;
+
+  const PromiseCard = ({ p, color, label }) => {
+    const isSel = selPr?.id === p.id;
+    return (<div style={{ background: BG2, border: `1px solid ${isSel ? color : BD}`, borderLeft: `3px solid ${color}`, borderRadius: 8, padding: "10px 12px", marginBottom: 7, cursor: "pointer" }} onClick={() => { setSelPr(isSel ? null : p); setActionType(null); }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ display: "flex", gap: 7, alignItems: "center", marginBottom: 3 }}>
+            <span style={{ color, fontSize: 9, fontWeight: 700, textTransform: "uppercase" }}>{label}</span>
+            <span style={{ color: T1, fontWeight: 700, fontSize: 12 }}>{p.clientName}</span>
+            <span style={{ color: T4, fontSize: 9 }}>{p.contractNo}</span>
+          </div>
+          <div style={{ display: "flex", gap: 10, fontSize: 10, color: T3 }}>
+            <span>📅 {p.promiseDate}</span>
+            <span>💰 {fMXN(p.amount * fx)} <span style={{ color: T4 }}>({fUSD(p.amount)})</span></span>
+            <span>🏷 {conceptName(p.concept)}</span>
+          </div>
+          {p.note && <div style={{ fontSize: 10, color: T4, marginTop: 4, fontStyle: "italic" }}>"{p.note}"</div>}
+        </div>
+      </div>
+      {isSel && <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${BD}` }}>
+        {!actionType && <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          <Btn label="✓ Validar (mandar a caja)" variant="success" small onClick={(e) => { e.stopPropagation(); if (window.confirm(`Validar promesa? Se creará una propuesta de cobro por ${fMXN(p.amount * fx)} para el cajero.`)) onValidate(p); }} />
+          <Btn label="📅 Recorrer fecha" variant="ghost" small onClick={(e) => { e.stopPropagation(); setActionType('reschedule'); setNewDate(today); }} />
+          <Btn label="✕ Cancelar promesa" variant="danger" small onClick={(e) => { e.stopPropagation(); if (window.confirm("¿Cancelar esta promesa?")) onCancel(p.id); }} />
+          {onGoToClient && <Btn label="Ver cliente" variant="ghost" small onClick={(e) => { e.stopPropagation(); onGoToClient(p.clientId); }} />}
+        </div>}
+        {actionType === 'reschedule' && <div style={{ display: "flex", gap: 6, alignItems: "flex-end" }} onClick={e => e.stopPropagation()}>
+          <Inp label="Nueva fecha (máx 30 días)" type="date" value={newDate} onChange={setNewDate} />
+          <Btn label="Cancelar" variant="ghost" small onClick={() => setActionType(null)} />
+          <Btn label="Recorrer" variant="success" small onClick={async () => { await onReschedule(p.id, newDate); setActionType(null); setSelPr(null); }} />
+        </div>}
+      </div>}
+    </div>);
+  };
+
+  return (<div style={{ padding: 20 }}>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+      <div>
+        <h2 style={{ color: B, fontWeight: 800, margin: 0, fontSize: 20 }}>★ Mis Promesas de Pago</h2>
+        <div style={{ color: T4, fontSize: 11, marginTop: 4 }}>
+          Da clic en una promesa para ver acciones · Las promesas son solo seguimiento; al validarse se mandan a caja como propuesta.
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 10 }}>
+        <div style={{ background: R + "12", border: `1px solid ${R}33`, borderRadius: 8, padding: "8px 12px", textAlign: "center" }}>
+          <div style={{ fontSize: 8, color: T4, textTransform: "uppercase" }}>Vencidas</div>
+          <div style={{ color: R, fontWeight: 800, fontSize: 18 }}>{overdue.length}</div>
+        </div>
+        <div style={{ background: Y + "12", border: `1px solid ${Y}33`, borderRadius: 8, padding: "8px 12px", textAlign: "center" }}>
+          <div style={{ fontSize: 8, color: T4, textTransform: "uppercase" }}>Hoy</div>
+          <div style={{ color: Y, fontWeight: 800, fontSize: 18 }}>{todayP.length}</div>
+        </div>
+        <div style={{ background: G + "12", border: `1px solid ${G}33`, borderRadius: 8, padding: "8px 12px", textAlign: "center" }}>
+          <div style={{ fontSize: 8, color: T4, textTransform: "uppercase" }}>Futuras</div>
+          <div style={{ color: G, fontWeight: 800, fontSize: 18 }}>{future.length}</div>
+        </div>
+      </div>
+    </div>
+
+    {/* VENCIDAS */}
+    {overdue.length > 0 && <div style={{ marginBottom: 18 }}>
+      <div style={{ fontSize: 11, color: R, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 8, padding: "5px 10px", background: R + "10", borderRadius: 6 }}>
+        ⚠ Promesas Vencidas ({overdue.length})
+      </div>
+      {overdue.map(p => <PromiseCard key={p.id} p={p} color={R} label={`Vencida ${Math.floor((new Date(today) - new Date(p.promiseDate))/86400000)}d`} />)}
+    </div>}
+
+    {/* HOY */}
+    {todayP.length > 0 && <div style={{ marginBottom: 18 }}>
+      <div style={{ fontSize: 11, color: Y, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 8, padding: "5px 10px", background: Y + "10", borderRadius: 6 }}>
+        📅 Promesas para Hoy ({todayP.length})
+      </div>
+      {todayP.map(p => <PromiseCard key={p.id} p={p} color={Y} label="Hoy" />)}
+    </div>}
+
+    {/* FUTURAS */}
+    {future.length > 0 && <div style={{ marginBottom: 18 }}>
+      <div style={{ fontSize: 11, color: G, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 8, padding: "5px 10px", background: G + "10", borderRadius: 6 }}>
+        📆 Promesas Futuras ({future.length})
+      </div>
+      {future.map(p => <PromiseCard key={p.id} p={p} color={G} label={p.promiseDate} />)}
+    </div>}
+
+    {myPromises.length === 0 && <div style={{ background: BG2, border: `1px solid ${BD}`, borderRadius: 10, padding: "30px 20px", textAlign: "center" }}>
+      <div style={{ fontSize: 36, marginBottom: 10 }}>★</div>
+      <div style={{ color: T2, fontWeight: 700, marginBottom: 5 }}>No tienes promesas pendientes</div>
+      <div style={{ color: T4, fontSize: 11 }}>Crea promesas desde la ficha del cliente para hacer seguimiento de tus cobros.</div>
+    </div>}
+  </div>);
+}
+
+// ── MODAL PARA CREAR PROMESA — Reutilizable desde ClientView ─────────────
+function PromiseModal({ client, fxRate, cu, onSave, onClose }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const max30 = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
+  const [date, setDate] = useState(today);
+  const [amount, setAmount] = useState("");
+  const [concept, setConcept] = useState("maintenance");
+  const [note, setNote] = useState("");
+  const fx = fxRate?.rate || 17.5;
+  const amtN = +amount || 0;
+  const valid = amtN > 0 && date >= today && date <= max30;
+
+  return (<Modal title={`Nueva Promesa de Pago — ${client?.name || ""}`} onClose={onClose}>
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+      <Inp label="Fecha de promesa (máx 30 días)" type="date" value={date} onChange={setDate} />
+      <Inp label="Concepto" value={concept} onChange={setConcept} opts={CONCEPT_OPTS} />
+      <Inp label="Monto en MXN" type="number" value={amount} onChange={setAmount} />
+      <div style={{ background: BG3, borderRadius: 6, padding: "8px 10px" }}>
+        <div style={{ fontSize: 8, color: T4 }}>Equivalente USD</div>
+        <div style={{ color: B, fontWeight: 700 }}>{fUSD(amtN / fx)}</div>
+        <div style={{ fontSize: 8, color: T4 }}>TC: ${fx}</div>
+      </div>
+    </div>
+    <div style={{ marginTop: 8 }}>
+      <Inp label="Nota (opcional)" value={note} onChange={setNote} />
+    </div>
+    {date < today && <div style={{ color: R, fontSize: 10, marginTop: 6 }}>⛔ La fecha no puede ser en el pasado</div>}
+    {date > max30 && <div style={{ color: R, fontSize: 10, marginTop: 6 }}>⛔ La fecha no puede ser más de 30 días</div>}
+    <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 14 }}>
+      <Btn label="Cancelar" variant="ghost" onClick={onClose} />
+      <Btn label="Crear Promesa" variant="success" disabled={!valid} onClick={() => {
+        onSave({ clientId: client.id, promiseDate: date, amount: amtN, concept, note });
+        onClose();
+      }} />
+    </div>
+  </Modal>);
+}
 // ── APP ROOT ─────────────────────────────────────────────────────────────────
 const MONTHS_ES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 export default function App() {
@@ -3903,17 +4121,78 @@ export default function App() {
   const savePromise = async (pr) => {
     try {
       const fx = fxRate?.rate || 17.5;
+      const dbUser = users.find(u => u.username === cu?.username);
       await insertPromise({
         client_id: pr.clientId,
-        gestor_id: cu?.id,
+        gestor_id: dbUser?.id || null,
         promise_date: pr.promiseDate,
         amount_usd: (pr.amount || 0) / fx,
-        note: pr.note,
+        note: pr.note || null,
+        concept: pr.concept || 'maintenance',
         status: 'pending',
       });
       await loadAll();
     } catch (e) {
       console.error('Error guardando promesa:', e);
+      alert('Error guardando promesa: ' + (e.message || JSON.stringify(e)));
+    }
+  };
+
+  // Recorrer promesa: cambiar fecha (máximo 30 días desde hoy)
+  const reschedulePromise = async (id, newDate) => {
+    try {
+      const today = new Date(); today.setHours(0,0,0,0);
+      const max = new Date(today.getTime() + 30 * 86400000);
+      const target = new Date(newDate + "T12:00:00");
+      if (target > max) { alert("La fecha no puede ser más de 30 días en el futuro."); return; }
+      if (target < today) { alert("La fecha no puede ser en el pasado."); return; }
+      await updatePromise(id, { promise_date: newDate });
+      await loadAll();
+    } catch (e) {
+      console.error(e); alert('Error: ' + (e.message || JSON.stringify(e)));
+    }
+  };
+
+  // Cancelar promesa (status = cancelled)
+  const cancelPromise = async (id) => {
+    try {
+      await updatePromise(id, { status: 'cancelled' });
+      await loadAll();
+    } catch (e) {
+      console.error(e); alert('Error: ' + (e.message || JSON.stringify(e)));
+    }
+  };
+
+  // Validar promesa: convertirla en propuesta de pago para caja
+  const validatePromiseToCashier = async (promise) => {
+    try {
+      const dbUser = users.find(u => u.username === cu?.username);
+      const fx = fxRate?.rate || 17.5;
+      const amountMxn = promise.amount * fx;
+      const defaultPm = pms.filter(m => m.active !== false)[0];
+      // Crear pending_payment con monto total
+      const pp = {
+        client_id: promise.clientId,
+        concept: promise.concept || 'maintenance',
+        maint_amount_usd: promise.concept === 'moratorios' ? 0 : promise.amount,
+        mora_amount_usd: promise.concept === 'moratorios' ? promise.amount : 0,
+        maint_discount_usd: 0,
+        mora_discount_usd: 0,
+        total_usd: promise.amount,
+        submitted_by: dbUser?.id || null,
+        payment_method_id: defaultPm?.id || null,
+        is_prepago: false,
+        status: 'pending',
+        submitted_at: new Date().toISOString(),
+        note: `[Desde Promesa #${promise.id}] ${promise.note || ''}`,
+      };
+      await insertPendingPayment(pp);
+      // Marcar promesa como cumplida (convertida)
+      await updatePromise(promise.id, { status: 'fulfilled', fulfilled_at: new Date().toISOString() });
+      await loadAll();
+      alert(`Promesa convertida en propuesta de cobro. El cajero podrá validarla.`);
+    } catch (e) {
+      console.error(e); alert('Error: ' + (e.message || JSON.stringify(e)));
     }
   };
 
@@ -4087,7 +4366,7 @@ export default function App() {
     try {
       const dbStatus = newStatus === 'Cumplida' ? 'fulfilled' : 'expired';
       const fields = { status: dbStatus };
-      if (dbStatus === 'fulfilled') fields.fulfilled_date = new Date().toISOString().split('T')[0];
+      if (dbStatus === 'fulfilled') fields.fulfilled_at = new Date().toISOString();
       await updatePromise(id, fields);
       await loadAll();
     } catch (e) {
@@ -4384,7 +4663,8 @@ export default function App() {
       <div style={{ flex: 1, overflowY: "auto", padding: 20 }}>
         <div style={{ fontSize: 15, fontWeight: 800, color: T2, marginBottom: 15, letterSpacing: ".03em" }}>{active?.l}</div>
         {tab === "dash" && <Dashboard clients={clients} reservations={reservations} payments={payments} pp={pp} promises={promises} users={users} condonations={condonations} />}
-        {tab === "clients" && <ClientsView clients={clients} setClients={setClients} pp={pp} cu={cu} payments={payments} reservations={reservations} users={users} condonations={condonations} onGoToCashier={cid => { setPreselClient(cid); setTab("cashier"); }} onGoToRes={cid => { setPreselResClient(cid); setTab("res"); }} onSaveClient={saveClient} onAddPhone={addClientPhone} onSetPhoneActive={setClientPhoneActive} onAddEmail={addClientEmail} onSetEmailActive={setClientEmailActive} onAddAddress={addClientAddress} onSetAddressActive={setClientAddressActive} onAddComment={addClientComment} onSaveSavedPoints={saveSavedPoints} />}
+        {tab === "promesas" && <PromisesView promises={promises} clients={clients} cu={cu} users={users} fxRate={fxRate} onValidate={validatePromiseToCashier} onReschedule={reschedulePromise} onCancel={cancelPromise} onGoToClient={(cid) => { setPreselClient(cid); setTab("clients"); }} />}
+        {tab === "clients" && <ClientsView clients={clients} setClients={setClients} pp={pp} cu={cu} payments={payments} reservations={reservations} users={users} condonations={condonations} fxRate={fxRate} onGoToCashier={cid => { setPreselClient(cid); setTab("cashier"); }} onGoToRes={cid => { setPreselResClient(cid); setTab("res"); }} onSaveClient={saveClient} onAddPhone={addClientPhone} onSetPhoneActive={setClientPhoneActive} onAddEmail={addClientEmail} onSetEmailActive={setClientEmailActive} onAddAddress={addClientAddress} onSetAddressActive={setClientAddressActive} onAddComment={addClientComment} onSaveSavedPoints={saveSavedPoints} onSavePromise={savePromise} />}
         {tab === "cashier" && <CashierView clients={clients} payments={payments} setPayments={setPayments} setClients={setClients} pp={pp} pms={pms} cu={cu} users={users} cr={cr} condonations={condonations} pendingPayments={pendingPayments} setPendingPayments={setPendingPayments} promises={promises} setPromises={setPromises} fxRate={fxRate} setFxRate={setFxRate} preselClientId={preselClient} onClearPresel={() => setPreselClient(null)} onSavePayment={savePayment} onSavePending={savePendingPayment} onRejectPending={rejectPendingPayment} onSaveFxRate={saveFxRate} />}
         {tab === "res" && <ReservationsView clients={clients} reservations={reservations} setReservations={setReservations} units={units} setUnits={setUnits} uts={uts} cu={cu} rc={rc} payments={payments} condonations={condonations} users={users} preselClientId={preselResClient} onClearPresel={() => setPreselResClient(null)} onSaveReservation={saveReservation} onCancelReservation={cancelReservation} />}
         {tab === "col" && <CollectionsView clients={clients} payments={payments} pp={pp} promises={promises} setPromises={setPromises} cu={cu} fxRate={fxRate} onSavePromise={savePromise} onUpdatePromise={updatePromiseStatus} condonations={condonations} />}
@@ -4394,7 +4674,7 @@ export default function App() {
         {tab === "pmethods" && <PayMethodsView pms={pms} setPms={setPms} onSavePm={savePaymentMethod} />}
         {tab === "comp" && <CompView users={users} setUsers={setUsers} payments={payments} reservations={reservations} pp={pp} rc={rc} setRc={setRc} cr={cr} setCr={setCr} onSaveUser={saveUser} onSaveCommissionRate={saveCommissionRate} onSaveReservationFee={saveReservationFee} />}
         {tab === "users" && <UsersView cu={cu} users={users} setUsers={setUsers} rc={rc} onSaveUser={saveUser} />}
-        {tab === "team" && <TeamView users={users} setUsers={setUsers} clients={clients} setClients={setClients} payments={payments} reservations={reservations} onAssignGestor={assignGestor} onCancelContract={cancelContract} onSaveUser={saveUser} cu={cu} />}
+        {tab === "team" && <TeamView users={users} setUsers={setUsers} clients={clients} setClients={setClients} payments={payments} reservations={reservations} condonations={condonations} onAssignGestor={assignGestor} onCancelContract={cancelContract} onSaveUser={saveUser} cu={cu} />}
         {tab === "contracts" && <ContractsView clients={clients} setClients={setClients} />}
         {tab === "courtesies" && <CourtesiesView clients={clients} setClients={setClients} courtesies={courtesies} setCourtesies={setCourtesies} pp={pp} cu={cu} users={users} onSaveCourtesy={saveCourtesy} />}
         {tab === "special" && <SpecialMgmtView clients={clients} payments={payments} condonations={condonations} setCondonations={setCondonations} cu={cu} users={users} pp={pp} onSaveCondonation={saveCondonation} onSaveRecoveredPoints={saveRecoveredPoints} />}
