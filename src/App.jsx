@@ -21,6 +21,7 @@ import {
   cancelClientContract,
   insertCourtesy, fetchCourtesies,
   fetchCondonations, insertCondonation,
+  fetchPointSales,
   fetchPointPrices, upsertPointPrice, getPriceForYear,
   fetchUnitAvailability, insertUnitAvailability, updateUnitAvailability, deleteUnitAvailability, getAvailableRooms,
   insertUnitSeasonRange, updateUnitSeasonRange, deleteUnitSeasonRange,
@@ -178,8 +179,8 @@ const mkE = (label, email, active = true) => ({ label, email, active });
 const mkA = (label, text, active = true) => ({ label, text, active });
 const mkC = (text, by, date) => ({ id: Math.random(), text, by, date });
 const RM = { superadmin: { l: "Super Admin", c: B }, admin: { l: "Admin", c: Y }, cajero: { l: "Cajero", c: G }, gestor: { l: "Gestor", c: P } };
-const RT = { superadmin: ["dash", "clients", "cashier", "res", "col", "reports", "config", "pmethods", "comp", "users", "special", "legacy"], admin: ["dash", "clients", "reports", "config", "team", "contracts", "courtesies", "ps", "special", "legacy"], cajero: ["cashier", "clients", "ps"], gestor: ["res", "col", "cashier", "clients", "ec", "ps"] };
-const ATABS = [{ id: "dash", l: "Dashboard", i: "◈" }, { id: "clients", l: "Clientes", i: "◉" }, { id: "cashier", l: "Caja", i: "◐" }, { id: "res", l: "Reservaciones", i: "◫" }, { id: "col", l: "Cobranzas", i: "◎" }, { id: "reports", l: "Reportes", i: "◧" }, { id: "config", l: "Config", i: "◬" }, { id: "pmethods", l: "Medios de Pago", i: "◆" }, { id: "comp", l: "Sueldos", i: "◇" }, { id: "users", l: "Usuarios", i: "◭" }, { id: "team", l: "Mi Equipo", i: "◩" }, { id: "contracts", l: "Contratos", i: "◪" }, { id: "courtesies", l: "Cortesías", i: "◤" }, { id: "ec", l: "Mi Estado de Cuenta", i: "◊" }, { id: "special", l: "Gestión Especial", i: "◈" }, { id: "legacy", l: "Alta Contratos", i: "⊕" }, { id: "ps", l: "Venta Puntos", i: "◥" }];
+const RT = { superadmin: ["dash", "clients", "cashier", "res", "col", "reports", "cobranza", "config", "pmethods", "comp", "users", "special", "legacy"], admin: ["dash", "clients", "reports", "cobranza", "config", "team", "contracts", "courtesies", "ps", "special", "legacy"], cajero: ["cashier", "cobranza", "clients", "ps"], gestor: ["res", "col", "cashier", "clients", "ec", "ps"] };
+const ATABS = [{ id: "dash", l: "Dashboard", i: "◈" }, { id: "clients", l: "Clientes", i: "◉" }, { id: "cashier", l: "Caja", i: "◐" }, { id: "res", l: "Reservaciones", i: "◫" }, { id: "col", l: "Cobranzas", i: "◎" }, { id: "reports", l: "Reportes", i: "◧" }, { id: "cobranza", l: "Rep. Cobranza", i: "◑" }, { id: "config", l: "Config", i: "◬" }, { id: "pmethods", l: "Medios de Pago", i: "◆" }, { id: "comp", l: "Sueldos", i: "◇" }, { id: "users", l: "Usuarios", i: "◭" }, { id: "team", l: "Mi Equipo", i: "◩" }, { id: "contracts", l: "Contratos", i: "◪" }, { id: "courtesies", l: "Cortesías", i: "◤" }, { id: "ec", l: "Mi Estado de Cuenta", i: "◊" }, { id: "special", l: "Gestión Especial", i: "◈" }, { id: "legacy", l: "Alta Contratos", i: "⊕" }, { id: "ps", l: "Venta Puntos", i: "◥" }];
 const INIT_U = [
   { id: 1, username: "superadmin", password: "admin", role: "superadmin", name: "Super Administrador", color: B, salary: 0, commissions: { collection: 0 }, active: true },
   { id: 2, username: "admin1", password: "admin", role: "admin", name: "Carmen Ríos", color: Y, salary: 5000, commissions: { collection: 0.015 }, active: true },
@@ -3461,6 +3462,168 @@ function LegacyContractView({ cu, users, onSave }) {
     </div>
   </div>);
 }
+// ── REPORTE DE COBRANZA ────────────────────────────────────────────────────
+function CobranzaReportView({ payments, pointSales, pms, users, cr, cu }) {
+  const [period, setPeriod] = useState("today");
+
+  const today = new Date().toISOString().slice(0, 10);
+  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const monthStart = `${CY}-${String(new Date().getMonth() + 1).padStart(2, "0")}-01`;
+  const yearStart = `${CY}-01-01`;
+  const lastYearStart = `${CY - 1}-01-01`;
+  const lastYearEnd = `${CY - 1}-12-31`;
+
+  const PERIODS = [
+    { id: "today", l: "Hoy", from: today, to: today },
+    { id: "yesterday", l: "Ayer", from: yesterday, to: yesterday },
+    { id: "month", l: "Este Mes", from: monthStart, to: today },
+    { id: "year", l: "Este Año", from: yearStart, to: today },
+    { id: "lastyear", l: "Año Anterior", from: lastYearStart, to: lastYearEnd },
+  ];
+
+  const cur = PERIODS.find(p => p.id === period);
+
+  // Obtener tasa de comisión por concepto
+  const getCrRate = (concept) => {
+    if (!cr) return 0;
+    const match = cr.find(r => r.id === concept || r.id === concept?.replace('point_purchase', 'point_sale'));
+    return (match?.pct || 0) / 100;
+  };
+
+  // Combinar payments + point_sales en un solo array normalizado
+  const allRows = [
+    // Pagos de mantenimiento/mora/cancelación
+    ...payments
+      .filter(p => p.date >= cur.from && p.date <= cur.to)
+      .map(p => {
+        const pm = pms.find(m => m.id === p.methodId);
+        const pmName = pm?.name || p.method || "—";
+        const costoPct = pm?.costPct || 0;
+        const costoFin = p.amount * costoPct / 100;
+        // Descuento = monto completo - monto cobrado (sin moratorios en el cálculo)
+        // monto completo = amountMant × fx (si tuviéramos el fx original, usamos amount + discountMant × fx)
+        // Como tenemos el descuento en USD de BD, lo convertimos a MXN aproximado
+        const fx = 17.5; // aproximación; en producción vendría del pago
+        const descMantMxn = (p.discountMant || 0) * fx;
+        const moraMxn = (p.amountMora || 0) * fx;
+        // Descuento neto = descuento - mora cobrada (mora resta el descuento)
+        const descuentoNeto = descMantMxn - moraMxn;
+        // Comisión del gestor
+        const gestorRate = p.isPrepago ? getCrRate('prepago') : getCrRate('maintenance');
+        const comisionMxn = p.amount * gestorRate;
+        const costoCobranza = p.amount > 0
+          ? ((costoFin + descuentoNeto + comisionMxn) / p.amount) * 100
+          : 0;
+        return {
+          id: p.id, date: p.date,
+          contractNo: p.contractNo, clientName: p.clientName,
+          concept: p.isPrepago ? "Mant. Adelantado (Prepago)" : p.type === "maintenance" ? "Mantenimiento" : p.type === "moratorios" ? "Moratorios" : p.type || "Otro",
+          amount: p.amount, discuento: descuentoNeto,
+          metodoPago: pmName, costoFin, comision: comisionMxn,
+          costoCobranza, gestorName: users.find(u => u.username === p.originatedBy)?.name || p.originatedBy || "—",
+        };
+      }),
+    // Ventas de puntos
+    ...pointSales
+      .filter(s => s.date >= cur.from && s.date <= cur.to)
+      .map(s => {
+        const pm = pms.find(m => m.id === s.methodId);
+        const pmName = pm?.name || "—";
+        const costoPct = pm?.costPct || 0;
+        const costoFin = s.amount * costoPct / 100;
+        const comisionMxn = s.amount * getCrRate('point_sale');
+        const costoCobranza = s.amount > 0
+          ? ((costoFin + comisionMxn) / s.amount) * 100
+          : 0;
+        return {
+          id: "ps_" + s.id, date: s.date,
+          contractNo: s.contractNo, clientName: s.clientName,
+          concept: `Venta Puntos (${s.saleType || "—"})`,
+          amount: s.amount, discuento: 0,
+          metodoPago: pmName, costoFin, comision: comisionMxn,
+          costoCobranza, gestorName: users.find(u => u.username === s.submittedBy)?.name || s.submittedBy || "—",
+        };
+      }),
+  ].sort((a, b) => b.date.localeCompare(a.date));
+
+  // Totales
+  const totAmount = allRows.reduce((a, r) => a + r.amount, 0);
+  const totDesc = allRows.reduce((a, r) => a + r.discuento, 0);
+  const totCostoFin = allRows.reduce((a, r) => a + r.costoFin, 0);
+  const totComision = allRows.reduce((a, r) => a + r.comision, 0);
+  const totCostoCobranza = totAmount > 0
+    ? ((totCostoFin + totDesc + totComision) / totAmount) * 100
+    : 0;
+
+  const colW = { date: 90, contract: 90, client: 180, concept: 150, amount: 110, desc: 100, method: 110, costoFin: 90, costoC: 90, gestor: 110 };
+
+  return (<div style={{ padding: 20 }}>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+      <h2 style={{ color: B, fontWeight: 800, margin: 0, fontSize: 18 }}>◑ Reporte de Cobranza</h2>
+      <div style={{ display: "flex", gap: 6 }}>
+        {PERIODS.map(p => (
+          <button key={p.id} onClick={() => setPeriod(p.id)} style={{ background: period === p.id ? B : BG2, color: period === p.id ? "#fff" : T4, border: `1px solid ${period === p.id ? B : BD}`, borderRadius: 7, padding: "5px 12px", fontSize: 11, fontWeight: period === p.id ? 700 : 400, cursor: "pointer", fontFamily: "inherit" }}>{p.l}</button>
+        ))}
+      </div>
+    </div>
+
+    {/* KPIs */}
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 10, marginBottom: 16 }}>
+      {[
+        ["Total Cobrado", fMXN(totAmount), B],
+        ["Descuentos Netos", fMXN(totDesc), totDesc > 0 ? Y : G],
+        ["Costos Financieros", fMXN(totCostoFin), O],
+        ["Comisiones Gestores", fMXN(totComision), P],
+        ["Costo de Cobranza", totCostoCobranza.toFixed(2) + "%", totCostoCobranza > 30 ? R : totCostoCobranza > 15 ? Y : G],
+      ].map(([l, v, c]) => (<div key={l} style={{ background: BG2, border: `1px solid ${BD}`, borderRadius: 8, padding: "12px 14px" }}>
+        <div style={{ fontSize: 9, color: T4, textTransform: "uppercase", marginBottom: 3 }}>{l}</div>
+        <div style={{ color: c, fontWeight: 800, fontSize: 16 }}>{v}</div>
+        <div style={{ fontSize: 9, color: T4, marginTop: 2 }}>{allRows.length} transacciones</div>
+      </div>))}
+    </div>
+
+    {allRows.length === 0
+      ? <div style={{ color: T4, textAlign: "center", padding: 40 }}>Sin transacciones en el período seleccionado.</div>
+      : (<div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+          <thead>
+            <tr style={{ background: BG3 }}>
+              {[["Fecha", colW.date], ["Contrato", colW.contract], ["Cliente", colW.client], ["Concepto", colW.concept], ["Monto", colW.amount], ["Descuento", colW.desc], ["Medio", colW.method], ["Costo Fin.", colW.costoFin], ["Costo Cobr.%", colW.costoC], ["Gestor", colW.gestor]].map(([h, w]) => (
+                <th key={h} style={{ padding: "7px 10px", textAlign: "left", fontSize: 9, color: T4, textTransform: "uppercase", letterSpacing: ".05em", width: w, borderBottom: `2px solid ${BD}` }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {allRows.map(r => (
+              <tr key={r.id} style={{ borderBottom: `1px solid ${BG3}` }}>
+                <td style={{ padding: "6px 10px", color: T4, fontSize: 10 }}>{r.date}</td>
+                <td style={{ padding: "6px 10px", color: B, fontWeight: 600 }}>{r.contractNo}</td>
+                <td style={{ padding: "6px 10px", color: T1 }}>{r.clientName}</td>
+                <td style={{ padding: "6px 10px", color: T3 }}>{r.concept}</td>
+                <td style={{ padding: "6px 10px", color: G, fontWeight: 700, textAlign: "right" }}>{fMXN(r.amount)}</td>
+                <td style={{ padding: "6px 10px", color: r.discuento > 0 ? R : r.discuento < 0 ? G : T4, textAlign: "right" }}>{fMXN(r.discuento)}</td>
+                <td style={{ padding: "6px 10px", color: T3 }}>{r.metodoPago}</td>
+                <td style={{ padding: "6px 10px", color: O, textAlign: "right" }}>{fMXN(r.costoFin)}</td>
+                <td style={{ padding: "6px 10px", color: r.costoCobranza > 30 ? R : r.costoCobranza > 15 ? Y : G, fontWeight: 600, textAlign: "right" }}>{r.costoCobranza.toFixed(2)}%</td>
+                <td style={{ padding: "6px 10px", color: T3, fontSize: 10 }}>{r.gestorName}</td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr style={{ background: BG3, borderTop: `2px solid ${BD}` }}>
+              <td colSpan={4} style={{ padding: "8px 10px", color: T1, fontWeight: 700, fontSize: 12 }}>TOTALES ({allRows.length} transacciones)</td>
+              <td style={{ padding: "8px 10px", color: G, fontWeight: 800, fontSize: 13, textAlign: "right" }}>{fMXN(totAmount)}</td>
+              <td style={{ padding: "8px 10px", color: totDesc > 0 ? R : G, fontWeight: 700, textAlign: "right" }}>{fMXN(totDesc)}</td>
+              <td style={{ padding: "8px 10px" }}></td>
+              <td style={{ padding: "8px 10px", color: O, fontWeight: 700, textAlign: "right" }}>{fMXN(totCostoFin)}</td>
+              <td style={{ padding: "8px 10px", color: totCostoCobranza > 30 ? R : totCostoCobranza > 15 ? Y : G, fontWeight: 800, fontSize: 13, textAlign: "right" }}>{totCostoCobranza.toFixed(2)}%</td>
+              <td style={{ padding: "8px 10px" }}></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>)}
+  </div>);
+}
 // ── APP ROOT ─────────────────────────────────────────────────────────────────
 const MONTHS_ES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 export default function App() {
@@ -3480,6 +3643,7 @@ export default function App() {
   const [courtesies, setCourtesies] = useState([]);
   const [condonations, setCondonations] = useState([]);
   const [pointPrices, setPointPrices] = useState([]);
+  const [pointSales, setPointSales] = useState([]);
   const [cr, setCr] = useState(INIT_CR);
   const [promises, setPromises] = useState([]);
   const [pendingSales, setPendingSales] = useState([]);
@@ -3549,6 +3713,12 @@ export default function App() {
         const dbPrices = await fetchPointPrices();
         if (dbPrices.length > 0) setPointPrices(dbPrices);
       } catch (e) { console.warn('No se pudo cargar point_prices:', e.message); }
+
+      // Cargar ventas de puntos validadas (para reportes)
+      try {
+        const dbPointSales = await fetchPointSales();
+        setPointSales(dbPointSales);
+      } catch (e) { console.warn('No se pudo cargar point_sales:', e.message); }
 
       // Cargar condonaciones (necesario antes de calcular saldo dinámico)
       let dbCondonations = [];
@@ -4219,6 +4389,7 @@ export default function App() {
         {tab === "res" && <ReservationsView clients={clients} reservations={reservations} setReservations={setReservations} units={units} setUnits={setUnits} uts={uts} cu={cu} rc={rc} payments={payments} condonations={condonations} preselClientId={preselResClient} onClearPresel={() => setPreselResClient(null)} onSaveReservation={saveReservation} onCancelReservation={cancelReservation} />}
         {tab === "col" && <CollectionsView clients={clients} payments={payments} pp={pp} promises={promises} setPromises={setPromises} cu={cu} fxRate={fxRate} onSavePromise={savePromise} onUpdatePromise={updatePromiseStatus} condonations={condonations} />}
         {tab === "reports" && <ReportsView clients={clients} reservations={reservations} payments={payments} pp={pp} users={users} role={cu.role} courtesies={courtesies} rc={rc} condonations={condonations} />}
+        {tab === "cobranza" && <CobranzaReportView payments={payments} pointSales={pointSales} pms={pms} users={users} cr={cr} cu={cu} />}
         {tab === "config" && <ConfigView seasonOrder={seasonOrder} setSeasonOrder={setSeasonOrder} uts={uts} setUts={setUts} units={units} setUnits={setUnits} pp={pp} setPp={setPp} onSaveUnit={saveUnit} onSaveUnitType={saveUnitType} onRemoveUnitType={removeUnitType} onSavePricePerPoint={savePricePerPoint} pointPrices={pointPrices} savePointPrice={savePointPrice} saveUnitAvailability={saveUnitAvailability} removeUnitAvailability={removeUnitAvailability} saveSeasonRange={saveSeasonRange} removeSeasonRange={removeSeasonRange} cu={cu} />}
         {tab === "pmethods" && <PayMethodsView pms={pms} setPms={setPms} onSavePm={savePaymentMethod} />}
         {tab === "comp" && <CompView users={users} setUsers={setUsers} payments={payments} reservations={reservations} pp={pp} rc={rc} setRc={setRc} cr={cr} setCr={setCr} onSaveUser={saveUser} onSaveCommissionRate={saveCommissionRate} onSaveReservationFee={saveReservationFee} />}

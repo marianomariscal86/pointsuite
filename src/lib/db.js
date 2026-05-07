@@ -974,3 +974,33 @@ export async function deleteUnitSeasonRange(id) {
   const { error } = await supabase.from('unit_season_ranges').delete().eq('id', id);
   if (error) throw error;
 }
+
+// ─── POINT SALES (fetch para reportes) ────────────────────
+export async function fetchPointSales() {
+  const { data, error } = await supabase
+    .from('point_sales')
+    .select('*, clients(full_name, contract_no), submittedUser:users!submitted_by(username, full_name), validatedUser:users!validated_by(username, full_name)')
+    .eq('status', 'validated')
+    .order('validated_at', { ascending: false });
+  if (error) return [];
+  return data.map(s => ({
+    id: s.id,
+    clientId: s.client_id,
+    clientName: s.clients?.full_name,
+    contractNo: s.clients?.contract_no,
+    type: 'point_sale',
+    concept: `Venta puntos (${s.sale_type})`,
+    date: s.validated_at?.slice(0, 10),
+    amount: parseFloat(s.total_mxn || 0),
+    priceUsd: parseFloat(s.price_usd || 0),
+    points: s.points_to_add,
+    submittedBy: s.submittedUser?.username,
+    submittedByName: s.submittedUser?.full_name,
+    validatedBy: s.validatedUser?.username,
+    saleType: s.sale_type,
+    note: s.note,
+    // Para reporte: ventas de puntos no tienen descuento ni mora
+    discountMant: 0, discountMora: 0,
+    amountMora: 0, methodId: null, methodName: null,
+  }));
+}
