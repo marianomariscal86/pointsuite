@@ -654,7 +654,7 @@ function ClientsView({ clients, setClients, pp, cu, payments, reservations, user
           <td style={td({ color: c.balance > 0 ? R : G, fontWeight: 700 })}>{f$(c.balance)}</td>
           <td style={td()}><Bdg l={c.cls.l} /></td>
           <td style={tS()}>{c.dueDate}</td>
-          <td style={tPs()}>{c.assignedGestor || "—"}</td>
+          <td style={tPs()}>{users.find(u => String(u.id) === String(c.assignedGestor))?.name || "—"}</td>
           <td style={td()}><Bdg l={c.contractStatus} /></td>
           <td style={tFl()}>
             {canEdit && <Btn label="Editar" variant="ghost" small onClick={e => { e.stopPropagation(); setModal(c); }} />}
@@ -682,7 +682,7 @@ function ClientsView({ clients, setClients, pp, cu, payments, reservations, user
           <Btn label="📋 Cobros" small variant="ghost" onClick={() => setDtab("txhistory")} />
           <Btn label="🏨 Reservas" small variant="ghost" onClick={() => setDtab("reshistory")} />
         </div>
-        {[["Contrato", selC.contractNo], ["Vencimiento", selC.dueDate], ["Gestor", selC.assignedGestor || "—"], ["Plazo", `${selC.contractYears || "—"}a (${selC.yearsElapsed || 0} transcurridos)`]].map(([l, v]) => (
+        {[["Contrato", selC.contractNo], ["Vencimiento", selC.dueDate], ["Gestor", users.find(u => String(u.id) === String(selC.assignedGestor))?.name || "—"], ["Plazo", `${selC.contractYears || "—"}a (${selC.yearsElapsed || 0} transcurridos)`]].map(([l, v]) => (
           <div key={l} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", borderBottom: `1px solid ${BG3}` }}>
             <span style={{ color: T4, fontSize: 11 }}>{l}</span><span style={{ color: T2, fontWeight: 600, fontSize: 11 }}>{v}</span>
           </div>
@@ -1515,7 +1515,7 @@ function ResModal({ clients, units, uts, reservations, onSave, onClose, cu, rc, 
     </div>
   </Modal>);
 }
-function ReservationsView({ clients, reservations, setReservations, units, setUnits, uts, cu, rc, payments, condonations, preselClientId, onClearPresel, onSaveReservation, onCancelReservation }) {
+function ReservationsView({ clients, reservations, setReservations, units, setUnits, uts, cu, rc, payments, condonations, users, preselClientId, onClearPresel, onSaveReservation, onCancelReservation }) {
   const [vtab, setVtab] = useState("avail"), [modal, setModal] = useState(preselClientId ? true : false), [confDoc, setConfDoc] = useState(null), [presel, setPresel] = useState(preselClientId || null), [filt, setFilt] = useState("All");
   const availC = useMemo(() => {
     // Clientes con mantenimiento pagado ESTE AÑO y con puntos disponibles sin usar en reservaciones
@@ -1557,7 +1557,7 @@ function ReservationsView({ clients, reservations, setReservations, units, setUn
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(270px,1fr))", gap: 11 }}>
         {availC.map(c => (<div key={c.id} style={{ background: BG2, border: `1px solid ${G}33`, borderRadius: 10, padding: "13px 15px", borderTop: `2px solid ${G}` }}>
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 7 }}>
-            <div><div style={{ color: T1, fontWeight: 700, fontSize: 13 }}>{c.name}</div><div style={{ color: T4, fontSize: 10 }}>{c.contractNo}·{c.assignedGestor || "—"}</div></div>
+            <div><div style={{ color: T1, fontWeight: 700, fontSize: 13 }}>{c.name}</div><div style={{ color: T4, fontSize: 10 }}>{c.contractNo}·{users?.find(u => String(u.id) === String(c.assignedGestor))?.name || "—"}</div></div>
             <div style={{ textAlign: "right" }}><div style={{ color: G, fontWeight: 800, fontSize: 16 }}>{c.avail.toLocaleString()}</div><div style={{ color: T4, fontSize: 9 }}>pts disponibles</div></div>
           </div>
           {c.sv > 0 && <div style={{ fontSize: 10, color: P, marginBottom: 6 }}>◈ {c.sv.toLocaleString()} pts guardados incluidos</div>}
@@ -1605,7 +1605,7 @@ function ReservationsView({ clients, reservations, setReservations, units, setUn
 function CollectionsView({ clients, payments, pp, promises, setPromises, cu, fxRate, onSavePromise, onUpdatePromise, condonations }) {
   const [filt, setFilt] = useState("All"), [vtab, setVtab] = useState("accounts"), [pMod, setPMod] = useState(null), [pDate, setPDate] = useState(new Date().toISOString().split("T")[0]), [pAmt, setPAmt] = useState(""), [pNote, setPNote] = useState("");
   const isAdmin = ["superadmin", "admin"].includes(cu.role);
-  const myC = isAdmin ? clients : clients.filter(c => c.assignedGestor === cu.username);
+  const myC = isAdmin ? clients : clients.filter(c => String(c.assignedGestor) === String(cu.id));
   const fx = fxRate?.rate || 17.5; // Tipo de cambio MXN/USD
   const collM = payments.filter(p => p.date && p.date.slice(0, 7) === TOM).reduce((a, p) => a + p.amount, 0);
   const collT = payments.filter(p => p.date === TOD).reduce((a, p) => a + p.amount, 0);
@@ -1990,7 +1990,7 @@ function ReportsView({ clients, reservations, payments, pp, users, role, courtes
         <td style={tRb()}>{f$(c.balance)}</td>
         <td style={tY()}>{f$(c.interest)}</td>
         <td style={tRb()}>{f$(c.balance + c.interest)}</td>
-        <td style={tPs()}>{c.assignedGestor || "—"}</td>
+        <td style={tPs()}>{users.find(u => String(u.id) === String(c.assignedGestor))?.name || "—"}</td>
         <td style={td({ color: T4, fontSize: 9 })}>{c.dOvr > 90 ? "⛔ Escalar" : c.dOvr > 30 ? "📞 Urgente" : "📞 Contactar"}</td>
       </tr>))} />}
     {rep === "res" && <div>
@@ -2125,7 +2125,7 @@ function ReportsView({ clients, reservations, payments, pp, users, role, courtes
                 <td style={tBs()}>{fP(c.usedP)}</td>
                 <td style={tP()}>{c.savedA > 0 ? fP(c.savedA) : "—"}</td>
                 <td style={{ ...td(), color: G, fontWeight: 700, fontSize: 13 }}>{fP(c.avail)}</td>
-                <td style={tPs()}>{c.assignedGestor || "—"}</td>
+                <td style={tPs()}>{users.find(u => String(u.id) === String(c.assignedGestor))?.name || "—"}</td>
                 <td style={td()}><Bdg l={cl.l} /></td>
               </tr>);
             })} />
@@ -4377,7 +4377,7 @@ export default function App() {
           <div style={{ fontSize: 7, color: sc2, letterSpacing: ".1em", textTransform: "uppercase", marginBottom: 4 }}>{RM[cu.role]?.l}</div>
           {cu.role === "superadmin" && <><div style={{ fontSize: 8, color: "#1a3050", marginBottom: 1 }}>Clientes: <b style={{ color: T4 }}>{clients.length}</b></div><div style={{ fontSize: 8, color: "#1a3050", marginBottom: 1 }}>Morosos: <b style={{ color: R }}>{morosos}</b></div><div style={{ fontSize: 8, color: "#1a3050" }}>YTD: <b style={{ color: G }}>{f$(payments.reduce((a, p) => a + p.amount, 0))}</b></div></>}
           {cu.role === "admin" && <><div style={{ fontSize: 8, color: "#1a3050", marginBottom: 1 }}>Gestores: <b style={{ color: P }}>{users.filter(u => u.role === "gestor" && u.active !== false).length}</b></div><div style={{ fontSize: 8, color: "#1a3050" }}>Morosos: <b style={{ color: R }}>{morosos}</b></div></>}
-          {cu.role === "gestor" && <><div style={{ fontSize: 8, color: "#1a3050", marginBottom: 1 }}>Mis cuentas: <b style={{ color: P }}>{clients.filter(c => c.assignedGestor === cu.username).length}</b></div><div style={{ fontSize: 8, color: "#1a3050" }}>Mis reservas: <b style={{ color: P }}>{reservations.filter(r => r.processedBy === cu.username).length}</b></div></>}
+          {cu.role === "gestor" && <><div style={{ fontSize: 8, color: "#1a3050", marginBottom: 1 }}>Mis cuentas: <b style={{ color: P }}>{clients.filter(c => String(c.assignedGestor) === String(cu.id)).length}</b></div><div style={{ fontSize: 8, color: "#1a3050" }}>Mis reservas: <b style={{ color: P }}>{reservations.filter(r => r.processedBy === cu.username).length}</b></div></>}
           {cu.role === "cajero" && <div style={{ fontSize: 8, color: "#1a3050" }}>Tarifa: <b style={{ color: G }}>{f$(pp)}/pt</b></div>}
         </div>
       </div>
@@ -4386,7 +4386,7 @@ export default function App() {
         {tab === "dash" && <Dashboard clients={clients} reservations={reservations} payments={payments} pp={pp} promises={promises} users={users} condonations={condonations} />}
         {tab === "clients" && <ClientsView clients={clients} setClients={setClients} pp={pp} cu={cu} payments={payments} reservations={reservations} users={users} condonations={condonations} onGoToCashier={cid => { setPreselClient(cid); setTab("cashier"); }} onGoToRes={cid => { setPreselResClient(cid); setTab("res"); }} onSaveClient={saveClient} onAddPhone={addClientPhone} onSetPhoneActive={setClientPhoneActive} onAddEmail={addClientEmail} onSetEmailActive={setClientEmailActive} onAddAddress={addClientAddress} onSetAddressActive={setClientAddressActive} onAddComment={addClientComment} onSaveSavedPoints={saveSavedPoints} />}
         {tab === "cashier" && <CashierView clients={clients} payments={payments} setPayments={setPayments} setClients={setClients} pp={pp} pms={pms} cu={cu} users={users} cr={cr} condonations={condonations} pendingPayments={pendingPayments} setPendingPayments={setPendingPayments} promises={promises} setPromises={setPromises} fxRate={fxRate} setFxRate={setFxRate} preselClientId={preselClient} onClearPresel={() => setPreselClient(null)} onSavePayment={savePayment} onSavePending={savePendingPayment} onRejectPending={rejectPendingPayment} onSaveFxRate={saveFxRate} />}
-        {tab === "res" && <ReservationsView clients={clients} reservations={reservations} setReservations={setReservations} units={units} setUnits={setUnits} uts={uts} cu={cu} rc={rc} payments={payments} condonations={condonations} preselClientId={preselResClient} onClearPresel={() => setPreselResClient(null)} onSaveReservation={saveReservation} onCancelReservation={cancelReservation} />}
+        {tab === "res" && <ReservationsView clients={clients} reservations={reservations} setReservations={setReservations} units={units} setUnits={setUnits} uts={uts} cu={cu} rc={rc} payments={payments} condonations={condonations} users={users} preselClientId={preselResClient} onClearPresel={() => setPreselResClient(null)} onSaveReservation={saveReservation} onCancelReservation={cancelReservation} />}
         {tab === "col" && <CollectionsView clients={clients} payments={payments} pp={pp} promises={promises} setPromises={setPromises} cu={cu} fxRate={fxRate} onSavePromise={savePromise} onUpdatePromise={updatePromiseStatus} condonations={condonations} />}
         {tab === "reports" && <ReportsView clients={clients} reservations={reservations} payments={payments} pp={pp} users={users} role={cu.role} courtesies={courtesies} rc={rc} condonations={condonations} />}
         {tab === "cobranza" && <CobranzaReportView payments={payments} pointSales={pointSales} pms={pms} users={users} cr={cr} cu={cu} />}

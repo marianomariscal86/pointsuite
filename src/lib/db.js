@@ -145,7 +145,7 @@ function mapPayment(p) {
 export async function fetchReservations() {
   const { data, error } = await supabase
     .from('reservations')
-    .select('*, clients(full_name, contract_no), units(name)')
+    .select('*, clients(full_name, contract_no), units(name), processedUser:users!processed_by(username, full_name)')
     .order('check_in', { ascending: false });
   if (error) throw error;
   return data.map(r => ({
@@ -161,7 +161,8 @@ export async function fetchReservations() {
     nights: r.nights,
     pointsUsed: r.points_used,
     status: r.status,
-    processedBy: r.processed_by,
+    processedBy: r.processedUser?.username || null,
+    processedById: r.processed_by || null,
     createdAt: r.created_at,
   }));
 }
