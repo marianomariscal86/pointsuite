@@ -2909,8 +2909,9 @@ function CourtesiesView({ clients, setClients, courtesies, setCourtesies, pp, cu
   </div>);
 }
 // ── DASHBOARD ────────────────────────────────────────────────────────────────
-function Dashboard({ clients, reservations, payments, pp, promises, users, condonations }) {
+function Dashboard({ clients, reservations, payments, pp, promises, users, condonations, fxRate }) {
   const [showAllPromises, setShowAllPromises] = useState(false);
+  const fx = fxRate?.rate || 17.5;
   const collT = payments.filter(p => p.date === TOD).reduce((a, p) => a + p.amount, 0);
   const collM = payments.filter(p => p.date && p.date.slice(0, 7) === TOM).reduce((a, p) => a + p.amount, 0);
   const activeProm = promises.filter(p => p.status === "pending" || p.status === "Pendiente");
@@ -2947,21 +2948,21 @@ function Dashboard({ clients, reservations, payments, pp, promises, users, condo
       {promOvr.length > 0 && <>
         <div style={{ fontSize: 9, color: R, fontWeight: 800, textTransform: "uppercase", marginBottom: 6, marginTop: 8 }}>⚠ Vencidas ({promOvr.length})</div>
         {promOvr.sort((a,b) => a.promiseDate.localeCompare(b.promiseDate)).map(p => (
-          <PromiseRow key={p.id} p={p} color={R} gestorName={gestorName(p)} />
+          <PromiseRow key={p.id} p={p} color={R} gestorName={gestorName(p)} fx={fx} />
         ))}
       </>}
       {/* Hoy */}
       {promT.length > 0 && <>
         <div style={{ fontSize: 9, color: Y, fontWeight: 800, textTransform: "uppercase", marginBottom: 6, marginTop: 8 }}>Hoy ({promT.length})</div>
         {promT.sort((a,b) => (b.amount||0)-(a.amount||0)).map(p => (
-          <PromiseRow key={p.id} p={p} color={Y} gestorName={gestorName(p)} />
+          <PromiseRow key={p.id} p={p} color={Y} gestorName={gestorName(p)} fx={fx} />
         ))}
       </>}
       {/* Futuras del mes */}
       {promM.filter(p => p.promiseDate > TOD).length > 0 && <>
         <div style={{ fontSize: 9, color: G, fontWeight: 800, textTransform: "uppercase", marginBottom: 6, marginTop: 8 }}>Futuras este mes ({promM.filter(p => p.promiseDate > TOD).length})</div>
         {promM.filter(p => p.promiseDate > TOD).sort((a,b) => a.promiseDate.localeCompare(b.promiseDate)).map(p => (
-          <PromiseRow key={p.id} p={p} color={G} gestorName={gestorName(p)} />
+          <PromiseRow key={p.id} p={p} color={G} gestorName={gestorName(p)} fx={fx} />
         ))}
       </>}
       {activeProm.length === 0 && <div style={{ color: T4, fontSize: 11, textAlign: "center", padding: "20px 0" }}>No hay promesas activas</div>}
@@ -2984,8 +2985,8 @@ function Dashboard({ clients, reservations, payments, pp, promises, users, condo
     <div style={{ display: "flex", gap: 9, flexWrap: "wrap", marginBottom: 18 }}>
       <Kpi label="Cobrado Hoy" value={f$(collT)} accent={G} />
       <Kpi label="Cobrado este Mes" value={f$(collM)} accent={B} />
-      <Kpi label="Promesas Hoy" value={promT.length} sub={f$(promT.reduce((a, p) => a + p.amount, 0))} accent={Y} warn={promT.length > 0} />
-      <Kpi label="Promesas Vencidas" value={promOvr.length} sub={f$(promOvr.reduce((a, p) => a + p.amount, 0))} accent={R} warn={promOvr.length > 0} />
+      <Kpi label="Promesas Hoy" value={promT.length} sub={fMXN(promT.reduce((a, p) => a + p.amount * fx, 0))} accent={Y} warn={promT.length > 0} />
+      <Kpi label="Promesas Vencidas" value={promOvr.length} sub={fMXN(promOvr.reduce((a, p) => a + p.amount * fx, 0))} accent={R} warn={promOvr.length > 0} />
       <Kpi label="Costo Cobranza Mes" value={costPct + "%"} sub={`${f$(txM + commM + salM)} / ${f$(collM)}`} accent={O} warn={parseFloat(costPct) > 25} />
       <Kpi label="Saldo Pendiente" value={f$(clients.reduce((a, c) => a + c.balance, 0))} accent={R} />
     </div>
@@ -3009,9 +3010,9 @@ function Dashboard({ clients, reservations, payments, pp, promises, users, condo
         <Sec t={`Promesas de Hoy (${promT.length})`} />
         {promT.length === 0 && promOvr.length > 0 && <>
           <div style={{ fontSize: 9, color: R, fontWeight: 700, marginBottom: 6 }}>⚠ {promOvr.length} promesa{promOvr.length > 1 ? "s" : ""} vencida{promOvr.length > 1 ? "s" : ""}</div>
-          {promOvr.slice(0, 4).map(p => <PromiseRow key={p.id} p={p} color={R} gestorName={gestorName(p)} />)}
+          {promOvr.slice(0, 4).map(p => <PromiseRow key={p.id} p={p} color={R} gestorName={gestorName(p)} fx={fx} />)}
         </>}
-        {promT.map(p => <PromiseRow key={p.id} p={p} color={Y} gestorName={gestorName(p)} />)}
+        {promT.map(p => <PromiseRow key={p.id} p={p} color={Y} gestorName={gestorName(p)} fx={fx} />)}
         {promT.length === 0 && promOvr.length === 0 && <div style={{ color: T4, fontSize: 11, textAlign: "center", padding: "14px 0" }}>Sin promesas para hoy</div>}
       </div>
 
@@ -3040,8 +3041,9 @@ function Dashboard({ clients, reservations, payments, pp, promises, users, condo
 }
 
 // Fila compacta de promesa para usar en Dashboard
-function PromiseRow({ p, color, gestorName }) {
-  const fx = 17.5; // Aproximación para display
+function PromiseRow({ p, color, gestorName, fx }) {
+  const rate = fx || 17.5;
+  const amountMxn = p.amount * rate;
   return (
     <div style={{ padding: "5px 7px", background: BG3, borderLeft: `2px solid ${color}`, borderRadius: 4, marginBottom: 4, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
       <div>
@@ -3052,7 +3054,7 @@ function PromiseRow({ p, color, gestorName }) {
           {p.concept && p.concept !== 'maintenance' && <span style={{ marginLeft: 6, color: color }}>· {p.concept}</span>}
         </div>
       </div>
-      <span style={{ color: color, fontWeight: 700, fontSize: 11, whiteSpace: "nowrap" }}>{fUSD(p.amount)}</span>
+      <span style={{ color: color, fontWeight: 700, fontSize: 11, whiteSpace: "nowrap" }}>{fMXN(amountMxn)}</span>
     </div>
   );
 }
@@ -4773,7 +4775,7 @@ export default function App() {
       </div>
       <div style={{ flex: 1, overflowY: "auto", padding: 20 }}>
         <div style={{ fontSize: 15, fontWeight: 800, color: T2, marginBottom: 15, letterSpacing: ".03em" }}>{active?.l}</div>
-        {tab === "dash" && <Dashboard clients={clients} reservations={reservations} payments={payments} pp={pp} promises={promises} users={users} condonations={condonations} />}
+        {tab === "dash" && <Dashboard clients={clients} reservations={reservations} payments={payments} pp={pp} promises={promises} users={users} condonations={condonations} fxRate={fxRate} />}
         {tab === "promesas" && <PromisesView promises={promises} clients={clients} cu={cu} users={users} fxRate={fxRate} onValidate={validatePromiseToCashier} onReschedule={reschedulePromise} onCancel={cancelPromise} onGoToClient={(cid) => { setPreselClient(cid); setTab("clients"); }} />}
         {tab === "clients" && <ClientsView clients={clients} setClients={setClients} pp={pp} cu={cu} payments={payments} reservations={reservations} users={users} condonations={condonations} fxRate={fxRate} onGoToCashier={cid => { setPreselClient(cid); setTab("cashier"); }} onGoToRes={cid => { setPreselResClient(cid); setTab("res"); }} onSaveClient={saveClient} onAddPhone={addClientPhone} onSetPhoneActive={setClientPhoneActive} onAddEmail={addClientEmail} onSetEmailActive={setClientEmailActive} onAddAddress={addClientAddress} onSetAddressActive={setClientAddressActive} onAddComment={addClientComment} onSaveSavedPoints={saveSavedPoints} onSavePromise={savePromise} />}
         {tab === "cashier" && <CashierView clients={clients} payments={payments} setPayments={setPayments} setClients={setClients} pp={pp} pms={pms} cu={cu} users={users} cr={cr} condonations={condonations} pendingPayments={pendingPayments} setPendingPayments={setPendingPayments} promises={promises} setPromises={setPromises} fxRate={fxRate} setFxRate={setFxRate} preselClientId={preselClient} onClearPresel={() => setPreselClient(null)} onSavePayment={savePayment} onSavePending={savePendingPayment} onRejectPending={rejectPendingPayment} onSaveFxRate={saveFxRate} promiseToValidate={promiseToValidate} onClearPromiseToValidate={() => setPromiseToValidate(null)} onPromiseFulfilled={markPromiseFulfilled} />}
