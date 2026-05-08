@@ -382,6 +382,14 @@ export async function updatePromise(id, fields) {
   if (error) throw error;
 }
 
+export async function deletePromise(id) {
+  const { error } = await supabase
+    .from('promises')
+    .delete()
+    .eq('id', id);
+  if (error) throw error;
+}
+
 // ─── PENDING PAYMENTS ─────────────────────────────────────
 export async function fetchPendingPayments() {
   const { data, error } = await supabase

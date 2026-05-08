@@ -12,7 +12,7 @@ import {
   fetchUnitTypes, insertUnitType, updateUnitType, deleteUnitType,
   fetchFxRate, insertFxRate,
   fetchPaymentMethods, insertPaymentMethod, updatePaymentMethod,
-  fetchPromises, insertPromise, updatePromise,
+  fetchPromises, insertPromise, updatePromise, deletePromise,
   fetchPendingPayments, insertPendingPayment, updatePendingPayment,
   fetchUsers, updateUser, insertUser,
   insertPointSale,
@@ -821,7 +821,7 @@ function FxRateEditor({ fxRate, setFxRate, onSaveFxRate }) {
   </div>);
 }
 
-function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, users, cr, condonations, pendingPayments, setPendingPayments, promises, setPromises, fxRate, setFxRate, preselClientId, onClearPresel, onSavePayment, onSavePending, onRejectPending, onSaveFxRate }) {
+function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, users, cr, condonations, pendingPayments, setPendingPayments, promises, setPromises, fxRate, setFxRate, preselClientId, onClearPresel, onSavePayment, onSavePending, onRejectPending, onSaveFxRate, promiseToValidate, onClearPromiseToValidate, onPromiseFulfilled }) {
   const isCajero = cu.role === "cajero";
   const isGestor = cu.role === "gestor";
   // Obtener tasa de comisión desde cr (commission_rates de BD)
@@ -904,6 +904,8 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
   // Auto-precargar monto y tipo cuando se selecciona un cliente
   useEffect(() => {
     if (!client) { setMontoTotal(""); setPtype("maintenance"); return; }
+    // Si viene una promesa a validar, los datos los pone el otro useEffect
+    if (promiseToValidate && promiseToValidate.clientId === client.id) return;
     if (yaPrepagado) {
       setPtype("maintenance"); setMontoTotal("");
       return;
@@ -918,6 +920,20 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
       setMontoTotal(sugerido > 0 ? String(Math.round(sugerido)) : "");
     }
   }, [sid]); // eslint-disable-line
+
+  // Pre-llenar formulario al venir de una promesa (Validar)
+  useEffect(() => {
+    if (promiseToValidate && clients.length > 0) {
+      const fx = fxRate?.rate || 17.5;
+      setSid(promiseToValidate.clientId);
+      const amountMxn = Math.round(promiseToValidate.amount * fx);
+      setMontoTotal(String(amountMxn));
+      // Mapear concept de promesa a ptype del formulario
+      if (promiseToValidate.concept === 'prepago') setPtype('prepago_maintenance');
+      else setPtype('maintenance');
+      setNote(`[Promesa #${promiseToValidate.id}] ${promiseToValidate.note || ''}`);
+    }
+  }, [promiseToValidate?.id]); // eslint-disable-line
 
   const submit = () => {
     if (!client || montoN <= 0) return;
@@ -943,6 +959,11 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
     setSid(null); setMontoTotal(""); setNote("");
     // Guardar en Supabase
     if (onSavePending) onSavePending(prop).catch(console.error);
+    // Si vino de una promesa, marcarla como cumplida y limpiar el state
+    if (promiseToValidate && onPromiseFulfilled) {
+      onPromiseFulfilled(promiseToValidate.id).catch(console.error);
+      if (onClearPromiseToValidate) onClearPromiseToValidate();
+    }
   };
   const validatePayment = (id, mid) => {
     const pp2 = pendingPayments.find(p => p.id === id); if (!pp2) return;
@@ -1050,6 +1071,20 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
   return (<div style={{ display: "grid", gridTemplateColumns: isCajero ? "1fr 1fr" : "1fr 1.2fr", gap: 14, alignItems: "start" }}>
     {!isCajero && (<div style={{ background: BG2, border: `1px solid ${BD}`, borderRadius: 12, padding: 18 }}>
       <Sec t="Registrar Propuesta de Cobro" />
+      {promiseToValidate && <div style={{ background: B + "15", border: `2px solid ${B}66`, borderRadius: 8, padding: "10px 13px", marginBottom: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <div style={{ color: B, fontWeight: 800, fontSize: 12 }}>★ Validando Promesa de Pago</div>
+            <div style={{ color: T3, fontSize: 11, marginTop: 2 }}>
+              {promiseToValidate.clientName} · {promiseToValidate.contractNo} · Promesa del {promiseToValidate.promiseDate}
+            </div>
+            <div style={{ color: T4, fontSize: 10, marginTop: 2 }}>
+              Si envías este pago a caja, la promesa se marcará como cumplida. Si cancelas, la promesa permanece pendiente.
+            </div>
+          </div>
+          <Btn label="✕ Cancelar validación" variant="ghost" small onClick={() => { if (onClearPromiseToValidate) onClearPromiseToValidate(); setSid(null); setMontoTotal(""); setNote(""); }} />
+        </div>
+      </div>}
       {ok && <div style={{ background: G + "12", border: `1px solid ${G}28`, borderRadius: 7, padding: "8px 10px", marginBottom: 11, fontSize: 11 }}><div style={{ color: G, fontWeight: 700 }}>✓ Propuesta enviada a caja (ID:{ok.id})</div><div style={{ color: T3 }}>{ok.name} · {f$(ok.total)} · Caja debe validar antes del fin del día</div></div>}
       <div style={{ fontSize: 10, color: T4, marginBottom: 10 }}>Puedes proponer un cobro para <b style={{ color: T1 }}>cualquier cliente</b>, aunque no esté asignado a ti. El cajero lo valida cuando lo cobre efectivamente.</div>
       <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
@@ -3735,9 +3770,9 @@ function PromisesView({ promises, clients, cu, users, fxRate, onValidate, onResc
       </div>
       {isSel && <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${BD}` }}>
         {!actionType && <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          <Btn label="✓ Validar (mandar a caja)" variant="success" small onClick={(e) => { e.stopPropagation(); if (window.confirm(`Validar promesa? Se creará una propuesta de cobro por ${fMXN(p.amount * fx)} para el cajero.`)) onValidate(p); }} />
+          <Btn label="✓ Validar (ir a caja)" variant="success" small onClick={(e) => { e.stopPropagation(); onValidate(p); }} />
           <Btn label="📅 Recorrer fecha" variant="ghost" small onClick={(e) => { e.stopPropagation(); setActionType('reschedule'); setNewDate(today); }} />
-          <Btn label="✕ Cancelar promesa" variant="danger" small onClick={(e) => { e.stopPropagation(); if (window.confirm("¿Cancelar esta promesa?")) onCancel(p.id); }} />
+          <Btn label="✕ Borrar promesa" variant="danger" small onClick={(e) => { e.stopPropagation(); if (window.confirm("¿Borrar esta promesa de pago? Esta acción no se puede deshacer.")) onCancel(p.id); }} />
           {onGoToClient && <Btn label="Ver cliente" variant="ghost" small onClick={(e) => { e.stopPropagation(); onGoToClient(p.clientId); }} />}
         </div>}
         {actionType === 'reschedule' && <div style={{ display: "flex", gap: 6, alignItems: "flex-end" }} onClick={e => e.stopPropagation()}>
@@ -3868,6 +3903,7 @@ export default function App() {
   const [pendingPayments, setPendingPayments] = useState([]);
   const [preselClient, setPreselClient] = useState(null);
   const [preselResClient, setPreselResClient] = useState(null);
+  const [promiseToValidate, setPromiseToValidate] = useState(null);
   const [loading, setLoading] = useState(false);
   const [dbError, setDbError] = useState(null);
 
@@ -4156,43 +4192,31 @@ export default function App() {
   // Cancelar promesa (status = cancelled)
   const cancelPromise = async (id) => {
     try {
-      await updatePromise(id, { status: 'cancelled' });
+      // Borrar la promesa por completo
+      await deletePromise(id);
       await loadAll();
     } catch (e) {
       console.error(e); alert('Error: ' + (e.message || JSON.stringify(e)));
     }
   };
 
-  // Validar promesa: convertirla en propuesta de pago para caja
-  const validatePromiseToCashier = async (promise) => {
+  // Validar promesa: NO crea pending_payment directamente.
+  // Lleva al gestor al formulario de caja con cliente + monto + concepto pre-llenados.
+  // La promesa queda en pending hasta que se envíe a caja, momento en que se marca como fulfilled.
+  const validatePromiseToCashier = (promise) => {
+    // Set state que CashierView leerá para pre-llenar
+    setPromiseToValidate(promise);
+    setPreselClient(promise.clientId);
+    setTab("cashier");
+  };
+
+  // Marca promesa como fulfilled tras enviar pago a caja exitosamente
+  const markPromiseFulfilled = async (promiseId) => {
     try {
-      const dbUser = users.find(u => u.username === cu?.username);
-      const fx = fxRate?.rate || 17.5;
-      const amountMxn = promise.amount * fx;
-      const defaultPm = pms.filter(m => m.active !== false)[0];
-      // Crear pending_payment con monto total
-      const pp = {
-        client_id: promise.clientId,
-        concept: promise.concept || 'maintenance',
-        maint_amount_usd: promise.concept === 'moratorios' ? 0 : promise.amount,
-        mora_amount_usd: promise.concept === 'moratorios' ? promise.amount : 0,
-        maint_discount_usd: 0,
-        mora_discount_usd: 0,
-        total_usd: promise.amount,
-        submitted_by: dbUser?.id || null,
-        payment_method_id: defaultPm?.id || null,
-        is_prepago: false,
-        status: 'pending',
-        submitted_at: new Date().toISOString(),
-        note: `[Desde Promesa #${promise.id}] ${promise.note || ''}`,
-      };
-      await insertPendingPayment(pp);
-      // Marcar promesa como cumplida (convertida)
-      await updatePromise(promise.id, { status: 'fulfilled', fulfilled_at: new Date().toISOString() });
+      await updatePromise(promiseId, { status: 'fulfilled', fulfilled_at: new Date().toISOString() });
       await loadAll();
-      alert(`Promesa convertida en propuesta de cobro. El cajero podrá validarla.`);
     } catch (e) {
-      console.error(e); alert('Error: ' + (e.message || JSON.stringify(e)));
+      console.error('Error marcando promesa como cumplida:', e);
     }
   };
 
@@ -4665,7 +4689,7 @@ export default function App() {
         {tab === "dash" && <Dashboard clients={clients} reservations={reservations} payments={payments} pp={pp} promises={promises} users={users} condonations={condonations} />}
         {tab === "promesas" && <PromisesView promises={promises} clients={clients} cu={cu} users={users} fxRate={fxRate} onValidate={validatePromiseToCashier} onReschedule={reschedulePromise} onCancel={cancelPromise} onGoToClient={(cid) => { setPreselClient(cid); setTab("clients"); }} />}
         {tab === "clients" && <ClientsView clients={clients} setClients={setClients} pp={pp} cu={cu} payments={payments} reservations={reservations} users={users} condonations={condonations} fxRate={fxRate} onGoToCashier={cid => { setPreselClient(cid); setTab("cashier"); }} onGoToRes={cid => { setPreselResClient(cid); setTab("res"); }} onSaveClient={saveClient} onAddPhone={addClientPhone} onSetPhoneActive={setClientPhoneActive} onAddEmail={addClientEmail} onSetEmailActive={setClientEmailActive} onAddAddress={addClientAddress} onSetAddressActive={setClientAddressActive} onAddComment={addClientComment} onSaveSavedPoints={saveSavedPoints} onSavePromise={savePromise} />}
-        {tab === "cashier" && <CashierView clients={clients} payments={payments} setPayments={setPayments} setClients={setClients} pp={pp} pms={pms} cu={cu} users={users} cr={cr} condonations={condonations} pendingPayments={pendingPayments} setPendingPayments={setPendingPayments} promises={promises} setPromises={setPromises} fxRate={fxRate} setFxRate={setFxRate} preselClientId={preselClient} onClearPresel={() => setPreselClient(null)} onSavePayment={savePayment} onSavePending={savePendingPayment} onRejectPending={rejectPendingPayment} onSaveFxRate={saveFxRate} />}
+        {tab === "cashier" && <CashierView clients={clients} payments={payments} setPayments={setPayments} setClients={setClients} pp={pp} pms={pms} cu={cu} users={users} cr={cr} condonations={condonations} pendingPayments={pendingPayments} setPendingPayments={setPendingPayments} promises={promises} setPromises={setPromises} fxRate={fxRate} setFxRate={setFxRate} preselClientId={preselClient} onClearPresel={() => setPreselClient(null)} onSavePayment={savePayment} onSavePending={savePendingPayment} onRejectPending={rejectPendingPayment} onSaveFxRate={saveFxRate} promiseToValidate={promiseToValidate} onClearPromiseToValidate={() => setPromiseToValidate(null)} onPromiseFulfilled={markPromiseFulfilled} />}
         {tab === "res" && <ReservationsView clients={clients} reservations={reservations} setReservations={setReservations} units={units} setUnits={setUnits} uts={uts} cu={cu} rc={rc} payments={payments} condonations={condonations} users={users} preselClientId={preselResClient} onClearPresel={() => setPreselResClient(null)} onSaveReservation={saveReservation} onCancelReservation={cancelReservation} />}
         {tab === "col" && <CollectionsView clients={clients} payments={payments} pp={pp} promises={promises} setPromises={setPromises} cu={cu} fxRate={fxRate} onSavePromise={savePromise} onUpdatePromise={updatePromiseStatus} condonations={condonations} />}
         {tab === "reports" && <ReportsView clients={clients} reservations={reservations} payments={payments} pp={pp} users={users} role={cu.role} courtesies={courtesies} rc={rc} condonations={condonations} />}
