@@ -2910,26 +2910,88 @@ function CourtesiesView({ clients, setClients, courtesies, setCourtesies, pp, cu
 }
 // ── DASHBOARD ────────────────────────────────────────────────────────────────
 function Dashboard({ clients, reservations, payments, pp, promises, users, condonations }) {
+  const [showAllPromises, setShowAllPromises] = useState(false);
   const collT = payments.filter(p => p.date === TOD).reduce((a, p) => a + p.amount, 0);
   const collM = payments.filter(p => p.date && p.date.slice(0, 7) === TOM).reduce((a, p) => a + p.amount, 0);
-  const promT = promises.filter(p => p.promiseDate === TOD && p.status === "Pendiente");
-  const promM = promises.filter(p => p.promiseDate && p.promiseDate.slice(0, 7) === TOM && p.status === "Pendiente");
+  const activeProm = promises.filter(p => p.status === "pending" || p.status === "Pendiente");
+  const promT = activeProm.filter(p => p.promiseDate === TOD);
+  const promM = activeProm.filter(p => p.promiseDate && p.promiseDate.slice(0, 7) === TOM);
+  const promOvr = activeProm.filter(p => p.promiseDate < TOD);
   const mPmts = payments.filter(p => p.date && p.date.slice(0, 7) === TOM);
   const txM = mPmts.reduce((a, p) => a + p.amount * (p.costPct || 0) / 100, 0);
   const commM = mPmts.reduce((a, p) => a + (p.agentCommission || 0), 0);
   const salM = users.filter(u => ["gestor", "cajero", "admin"].includes(u.role)).reduce((a, u) => a + (u.salary || 0), 0);
   const costPct = collM > 0 ? (((txM + commM + salM) / collM) * 100).toFixed(1) : "0.0";
   const en = clients.map(c => { const d = dOvr(c.dueDate); const cl = getClientStatus(c, payments, condonations); return { ...c, d, cls: cl, int: cInt(c.balance, d, cl.r * 12) }; });
+
+  const gestorName = (p) => p.gestorName || users.find(u => String(u.id) === String(p.gestorId))?.name || p.gestorUsername || "—";
+
+  // Panel de todas las promesas activas agrupadas por gestor
+  const AllPromisesPanel = () => {
+    const gestors = users.filter(u => u.role === "gestor");
+    return (<div style={{ background: BG2, border: `1px solid ${B}44`, borderRadius: 10, padding: 15, marginBottom: 14 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <Sec t="Todas las Promesas Activas" />
+        <Btn label="✕ Cerrar" variant="ghost" small onClick={() => setShowAllPromises(false)} />
+      </div>
+      {/* KPIs */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8, marginBottom: 14 }}>
+        {[[`Vencidas`, promOvr.length, R], [`Hoy`, promT.length, Y], [`Este Mes`, promM.length, G]].map(([l, v, c]) => (
+          <div key={l} style={{ background: c + "10", border: `1px solid ${c}33`, borderRadius: 7, padding: "8px 10px", textAlign: "center" }}>
+            <div style={{ fontSize: 8, color: T4, textTransform: "uppercase" }}>{l}</div>
+            <div style={{ color: c, fontWeight: 800, fontSize: 20 }}>{v}</div>
+          </div>
+        ))}
+      </div>
+      {/* Vencidas */}
+      {promOvr.length > 0 && <>
+        <div style={{ fontSize: 9, color: R, fontWeight: 800, textTransform: "uppercase", marginBottom: 6, marginTop: 8 }}>⚠ Vencidas ({promOvr.length})</div>
+        {promOvr.sort((a,b) => a.promiseDate.localeCompare(b.promiseDate)).map(p => (
+          <PromiseRow key={p.id} p={p} color={R} gestorName={gestorName(p)} />
+        ))}
+      </>}
+      {/* Hoy */}
+      {promT.length > 0 && <>
+        <div style={{ fontSize: 9, color: Y, fontWeight: 800, textTransform: "uppercase", marginBottom: 6, marginTop: 8 }}>Hoy ({promT.length})</div>
+        {promT.sort((a,b) => (b.amount||0)-(a.amount||0)).map(p => (
+          <PromiseRow key={p.id} p={p} color={Y} gestorName={gestorName(p)} />
+        ))}
+      </>}
+      {/* Futuras del mes */}
+      {promM.filter(p => p.promiseDate > TOD).length > 0 && <>
+        <div style={{ fontSize: 9, color: G, fontWeight: 800, textTransform: "uppercase", marginBottom: 6, marginTop: 8 }}>Futuras este mes ({promM.filter(p => p.promiseDate > TOD).length})</div>
+        {promM.filter(p => p.promiseDate > TOD).sort((a,b) => a.promiseDate.localeCompare(b.promiseDate)).map(p => (
+          <PromiseRow key={p.id} p={p} color={G} gestorName={gestorName(p)} />
+        ))}
+      </>}
+      {activeProm.length === 0 && <div style={{ color: T4, fontSize: 11, textAlign: "center", padding: "20px 0" }}>No hay promesas activas</div>}
+    </div>);
+  };
+
   return (<div>
+    {/* Botón ver todas las promesas (lado izquierdo del header) */}
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+      <div>
+        <Btn label={`★ Ver Promesas de Todos los Gestores (${activeProm.length})`} variant={showAllPromises ? "success" : "ghost"} onClick={() => setShowAllPromises(v => !v)} />
+      </div>
+      <div style={{ fontSize: 9, color: T4 }}>{TOD}</div>
+    </div>
+
+    {/* Panel de todas las promesas */}
+    {showAllPromises && <AllPromisesPanel />}
+
+    {/* KPIs */}
     <div style={{ display: "flex", gap: 9, flexWrap: "wrap", marginBottom: 18 }}>
       <Kpi label="Cobrado Hoy" value={f$(collT)} accent={G} />
       <Kpi label="Cobrado este Mes" value={f$(collM)} accent={B} />
       <Kpi label="Promesas Hoy" value={promT.length} sub={f$(promT.reduce((a, p) => a + p.amount, 0))} accent={Y} warn={promT.length > 0} />
-      <Kpi label="Promesas Resto Mes" value={promM.length} sub={f$(promM.reduce((a, p) => a + p.amount, 0))} accent={P} />
+      <Kpi label="Promesas Vencidas" value={promOvr.length} sub={f$(promOvr.reduce((a, p) => a + p.amount, 0))} accent={R} warn={promOvr.length > 0} />
       <Kpi label="Costo Cobranza Mes" value={costPct + "%"} sub={`${f$(txM + commM + salM)} / ${f$(collM)}`} accent={O} warn={parseFloat(costPct) > 25} />
       <Kpi label="Saldo Pendiente" value={f$(clients.reduce((a, c) => a + c.balance, 0))} accent={R} />
     </div>
+
     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 13 }}>
+      {/* Clasificación morosidad */}
       <div style={{ background: BG2, border: `1px solid ${BD}`, borderRadius: 10, padding: 15 }}>
         <Sec t="Clasificación de Morosidad" />
         {[{ l: "Al corriente", c: G }, { l: "1–30 días", c: "#a3e635" }, { l: "31–60 días", c: Y }, { l: "61–90 días", c: O }, { l: "91–180 días", c: R }, { l: "+180 días", c: "#dc2626" }].map(bk => {
@@ -2941,14 +3003,19 @@ function Dashboard({ clients, reservations, payments, pp, promises, users, condo
           </div>) : null;
         })}
       </div>
+
+      {/* Promesas de hoy (reemplaza "Próximas Reservaciones") */}
       <div style={{ background: BG2, border: `1px solid ${BD}`, borderRadius: 10, padding: 15 }}>
-        <Sec t="Próximas Reservaciones" />
-        {reservations.filter(r => r.status === "Confirmed").slice(0, 5).map(r => (<div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "5px 0", borderBottom: `1px solid ${BG3}` }}>
-          <div><div style={{ color: T1, fontSize: 11, fontWeight: 600 }}>{r.clientName}</div><div style={{ color: T4, fontSize: 9 }}>{r.unitName}·{r.locationName}·{r.checkIn}</div></div>
-          <Bdg l={r.status} />
-        </div>))}
-        {reservations.filter(r => r.status === "Confirmed").length === 0 && <div style={{ color: T4, fontSize: 11, textAlign: "center", padding: "14px 0" }}>Sin reservaciones</div>}
+        <Sec t={`Promesas de Hoy (${promT.length})`} />
+        {promT.length === 0 && promOvr.length > 0 && <>
+          <div style={{ fontSize: 9, color: R, fontWeight: 700, marginBottom: 6 }}>⚠ {promOvr.length} promesa{promOvr.length > 1 ? "s" : ""} vencida{promOvr.length > 1 ? "s" : ""}</div>
+          {promOvr.slice(0, 4).map(p => <PromiseRow key={p.id} p={p} color={R} gestorName={gestorName(p)} />)}
+        </>}
+        {promT.map(p => <PromiseRow key={p.id} p={p} color={Y} gestorName={gestorName(p)} />)}
+        {promT.length === 0 && promOvr.length === 0 && <div style={{ color: T4, fontSize: 11, textAlign: "center", padding: "14px 0" }}>Sin promesas para hoy</div>}
       </div>
+
+      {/* Pagos recientes */}
       <div style={{ background: BG2, border: `1px solid ${BD}`, borderRadius: 10, padding: 15 }}>
         <Sec t="Pagos Recientes" />
         {[...payments].reverse().slice(0, 5).map(p => (<div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "5px 0", borderBottom: `1px solid ${BG3}` }}>
@@ -2957,6 +3024,8 @@ function Dashboard({ clients, reservations, payments, pp, promises, users, condo
         </div>))}
         {payments.length === 0 && <div style={{ color: T4, fontSize: 11, textAlign: "center", padding: "14px 0" }}>Sin pagos</div>}
       </div>
+
+      {/* Pts por vencer */}
       <div style={{ background: BG2, border: `1px solid ${BD}`, borderRadius: 10, padding: 15 }}>
         <Sec t={`Pts vencen Dic 31, ${CY}`} />
         <div style={{ fontSize: 10, color: T4, marginBottom: 7 }}>Puntos sin pagar que vencerán si no se cobra a tiempo</div>
@@ -2968,6 +3037,24 @@ function Dashboard({ clients, reservations, payments, pp, promises, users, condo
       </div>
     </div>
   </div>);
+}
+
+// Fila compacta de promesa para usar en Dashboard
+function PromiseRow({ p, color, gestorName }) {
+  const fx = 17.5; // Aproximación para display
+  return (
+    <div style={{ padding: "5px 7px", background: BG3, borderLeft: `2px solid ${color}`, borderRadius: 4, marginBottom: 4, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <div>
+        <span style={{ color: T1, fontSize: 11, fontWeight: 600 }}>{p.clientName}</span>
+        <span style={{ color: T4, fontSize: 9, marginLeft: 6 }}>{p.contractNo}</span>
+        <div style={{ color: T4, fontSize: 9 }}>
+          {p.promiseDate} · {gestorName}
+          {p.concept && p.concept !== 'maintenance' && <span style={{ marginLeft: 6, color: color }}>· {p.concept}</span>}
+        </div>
+      </div>
+      <span style={{ color: color, fontWeight: 700, fontSize: 11, whiteSpace: "nowrap" }}>{fUSD(p.amount)}</span>
+    </div>
+  );
 }
 
 // ── MY ACCOUNT (GESTOR) ──────────────────────────────────────────────────────
@@ -4010,7 +4097,7 @@ export default function App() {
       setFxRate(dbFxRate);
       if (dbPms.length > 0) setPms(dbPms);
       else setPms(INIT_PM);
-      if (dbPromises.length > 0) setPromises(dbPromises);
+      setPromises(dbPromises); // siempre actualizar, incluso si es array vacío
       // Convertir montos USD a MXN para pending_payments usando el FX actual
       const fx = dbFxRate?.rate || 17.5;
       const dbPendingMxn = dbPending.map(p => ({
