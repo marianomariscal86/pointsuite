@@ -1961,10 +1961,10 @@ function PointSalesView({ clients, setClients, payments, setPayments, pp, pms, c
   </div>);
 }
 // ── REPORTS (compact) ────────────────────────────────────────────────────────
-function ReportsView({ clients, reservations, payments, pp, users, role, courtesies, rc, condonations }) {
+function ReportsView({ clients, reservations, payments, pp, users, role, courtesies, rc, condonations, units, uts }) {
   const [rep, setRep] = useState("col");
-  const [period, setPeriod] = useState("mtd"); // mtd | ytd | lm | ly
-  const tabs = [["col", "Cobranza"], ["mora", "Morosidad"], ["prom", "Promesas Pago"], ["res", "Reservaciones"], ["cgestor", "Costo Gestor"], ["cglobal", "Costo Global"], ["pts", "Puntos"], ["ptsAvail", "Pts Disponibles"], ["cort", "Cortesías"], ...(role === "superadmin" ? [["cto", "Contratos"]] : [])];
+  const [period, setPeriod] = useState("mtd");
+  const tabs = [["col", "Cobranza"], ["mora", "Morosidad"], ["prom", "Promesas Pago"], ["res", "Reservaciones"], ["inv", "Inventario"], ["cgestor", "Costo Gestor"], ["cglobal", "Costo Global"], ["pts", "Puntos"], ["ptsAvail", "Pts Disponibles"], ["cort", "Cortesías"], ...(role === "superadmin" ? [["cto", "Contratos"]] : [])];
   // Filtrar pagos según periodo
   const filterP = () => {
     const now = TODAY; const y = now.getFullYear(), m = now.getMonth();
@@ -2216,6 +2216,264 @@ function ReportsView({ clients, reservations, payments, pp, users, role, courtes
         <td style={tS()}>{c.cancelDate || "—"}</td>
         <td style={tS()}>{c.cancelReason || "—"}</td>
       </tr>))} />}
+    {rep === "inv" && <OccupancyReport reservations={reservations} units={units || []} uts={uts || []} />}
+  </div>);
+}
+// ── REPORTE DE OCUPACIÓN DE INVENTARIO ───────────────────────────────────────
+function OccupancyReport({ reservations, units, uts }) {
+  const CY_NOW = new Date().getFullYear();
+  const [viewYear, setViewYear] = useState(CY_NOW);
+  const MONTHS = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
+
+  // Para cada unidad, obtener el total_rooms disponible en una fecha dada
+  const getRoomsForUnit = (unit, dateStr) => {
+    const d = new Date(dateStr + "T12:00:00");
+    const avail = (unit.availability || []).find(a => {
+      const s = new Date(a.startDate + "T00:00:00");
+      const e = new Date(a.endDate + "T23:59:59");
+      return d >= s && d <= e;
+    });
+    return avail ? avail.totalRooms : 1; // default 1 si no hay configuración
+  };
+
+  // Para una fecha y unidad, ¿hay reservación activa?
+  const isOccupied = (unitId, dateStr) => {
+    const d = new Date(dateStr + "T12:00:00");
+    return reservations.some(r => {
+      if (r.unitId !== unitId) return false;
+      if (!["Confirmed","confirmed"].includes(r.status)) return false;
+      const ci = new Date((r.checkIn || "") + "T12:00:00");
+      const co = new Date((r.checkOut || "") + "T12:00:00");
+      return d >= ci && d < co; // checkout no cuenta como noche
+    });
+  };
+
+  // Calcular ocupación de un mes completo para un tipo de unidad
+  const calcMonthOccupancy = (typeId, year, month) => {
+    const typeUnits = units.filter(u => u.typeId === typeId && u.active !== false);
+    if (typeUnits.length === 0) return { pct: null, occDays: 0, totalDays: 0 };
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    let totalAvailUnitDays = 0, totalOccUnitDays = 0;
+    for (let day = 1; day <= daysInMonth; day++) {
+      const dateStr = `${year}-${String(month + 1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
+      for (const unit of typeUnits) {
+        const rooms = getRoomsForUnit(unit, dateStr);
+        totalAvailUnitDays += rooms;
+        if (isOccupied(unit.id, dateStr)) totalOccUnitDays++;
+      }
+    }
+    return { pct: totalAvailUnitDays > 0 ? (totalOccUnitDays / totalAvailUnitDays) * 100 : null, occDays: totalOccUnitDays, totalDays: totalAvailUnitDays };
+  };
+
+  // Calcular ocupación día por día de un mes para un tipo de unidad
+  const calcDailyOccupancy = (typeId, year, month) => {
+    const typeUnits = units.filter(u => u.typeId === typeId && u.active !== false);
+    if (typeUnits.length === 0) return [];
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const days = [];
+    for (let day = 1; day <= daysInMonth; day++) {
+      const dateStr = `${year}-${String(month + 1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
+      let totalRooms = 0, occRooms = 0;
+      for (const unit of typeUnits) {
+        const rooms = getRoomsForUnit(unit, dateStr);
+        totalRooms += rooms;
+        if (isOccupied(unit.id, dateStr)) occRooms++;
+      }
+      days.push({ day, dateStr, totalRooms, occRooms, pct: totalRooms > 0 ? (occRooms / totalRooms) * 100 : null });
+    }
+    return days;
+  };
+
+  const pctColor = (pct) => {
+    if (pct === null) return T4;
+    if (pct >= 80) return R;
+    if (pct >= 60) return O;
+    if (pct >= 30) return Y;
+    if (pct > 0) return G;
+    return T4;
+  };
+
+  const pctBg = (pct) => {
+    if (pct === null) return "transparent";
+    if (pct >= 80) return R + "25";
+    if (pct >= 60) return O + "22";
+    if (pct >= 30) return Y + "20";
+    if (pct > 0) return G + "18";
+    return "transparent";
+  };
+
+  const [expandedMonth, setExpandedMonth] = useState(null); // "year-month" key
+
+  const activeTypes = uts.filter(t => units.some(u => u.typeId === t.id && u.active !== false));
+
+  return (<div>
+    {/* Year selector */}
+    <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 16 }}>
+      <span style={{ fontSize: 11, color: T4 }}>Año:</span>
+      {[CY_NOW - 1, CY_NOW, CY_NOW + 1].map(y => (
+        <button key={y} onClick={() => { setViewYear(y); setExpandedMonth(null); }}
+          style={{ background: viewYear === y ? B : BG2, color: viewYear === y ? "#fff" : T4, border: `1px solid ${viewYear === y ? B : BD}`, borderRadius: 7, padding: "4px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+          {y}{y === CY_NOW - 1 ? " (anterior)" : y === CY_NOW ? " (actual)" : " (siguiente)"}
+        </button>
+      ))}
+    </div>
+
+    {activeTypes.length === 0 && <div style={{ color: T4, textAlign: "center", padding: 30 }}>No hay tipos de unidad con unidades activas configuradas.</div>}
+
+    {/* Leyenda */}
+    <div style={{ display: "flex", gap: 12, marginBottom: 14, flexWrap: "wrap" }}>
+      <span style={{ fontSize: 9, color: T4, textTransform: "uppercase" }}>Ocupación:</span>
+      {[[G,"1–29%"],[Y,"30–59%"],[O,"60–79%"],[R,"80–100%"]].map(([c,l]) => (
+        <span key={l} style={{ fontSize: 9, color: c, display: "flex", alignItems: "center", gap: 4 }}>
+          <span style={{ width: 10, height: 10, borderRadius: 2, background: c + "40", border: `1px solid ${c}` }} />{l}
+        </span>
+      ))}
+      <span style={{ fontSize: 9, color: T4, display: "flex", alignItems: "center", gap: 4 }}>
+        <span style={{ width: 10, height: 10, borderRadius: 2, background: BG3, border: `1px solid ${BD}` }} />0% / Sin datos
+      </span>
+    </div>
+
+    {/* Año anterior: resumen mensual acumulado por tipo (sin desglose diario) */}
+    {viewYear === CY_NOW - 1 && (<div>
+      <div style={{ fontSize: 11, color: T3, fontWeight: 700, marginBottom: 10 }}>
+        Resumen de Ocupación {CY_NOW - 1} — % mensual por tipo de unidad (acumulado)
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
+          <thead>
+            <tr style={{ background: BG3 }}>
+              <th style={{ padding: "7px 10px", textAlign: "left", color: T4, fontSize: 9, textTransform: "uppercase", borderBottom: `2px solid ${BD}`, minWidth: 130 }}>Tipo de Unidad</th>
+              {MONTHS.map(m => <th key={m} style={{ padding: "7px 8px", textAlign: "center", color: T4, fontSize: 9, textTransform: "uppercase", borderBottom: `2px solid ${BD}`, minWidth: 55 }}>{m}</th>)}
+              <th style={{ padding: "7px 8px", textAlign: "center", color: T4, fontSize: 9, textTransform: "uppercase", borderBottom: `2px solid ${BD}`, minWidth: 60 }}>Anual</th>
+            </tr>
+          </thead>
+          <tbody>
+            {activeTypes.map(t => {
+              const monthData = MONTHS.map((_, mi) => calcMonthOccupancy(t.id, viewYear, mi));
+              const annualOcc = monthData.reduce((a, d) => a + d.occDays, 0);
+              const annualTotal = monthData.reduce((a, d) => a + d.totalDays, 0);
+              const annualPct = annualTotal > 0 ? (annualOcc / annualTotal) * 100 : null;
+              return (<tr key={t.id} style={{ borderBottom: `1px solid ${BG3}` }}>
+                <td style={{ padding: "8px 10px", color: T1, fontWeight: 600 }}>{t.name}</td>
+                {monthData.map((d, mi) => (
+                  <td key={mi} style={{ padding: "8px 6px", textAlign: "center", background: pctBg(d.pct) }}>
+                    {d.pct !== null ? <span style={{ color: pctColor(d.pct), fontWeight: 700 }}>{d.pct.toFixed(0)}%</span> : <span style={{ color: T4 }}>—</span>}
+                  </td>
+                ))}
+                <td style={{ padding: "8px 6px", textAlign: "center", background: pctBg(annualPct), fontWeight: 800 }}>
+                  {annualPct !== null ? <span style={{ color: pctColor(annualPct) }}>{annualPct.toFixed(0)}%</span> : <span style={{ color: T4 }}>—</span>}
+                </td>
+              </tr>);
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>)}
+
+    {/* Año actual o siguiente: desglose mes por mes, día por día */}
+    {(viewYear === CY_NOW || viewYear === CY_NOW + 1) && (<div>
+      <div style={{ fontSize: 11, color: T3, fontWeight: 700, marginBottom: 10 }}>
+        Ocupación {viewYear} — Detalle día a día por mes y tipo de unidad
+      </div>
+      {/* Resumen anual primero */}
+      <div style={{ overflowX: "auto", marginBottom: 16 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
+          <thead>
+            <tr style={{ background: BG3 }}>
+              <th style={{ padding: "7px 10px", textAlign: "left", color: T4, fontSize: 9, textTransform: "uppercase", borderBottom: `2px solid ${BD}`, minWidth: 130 }}>Tipo</th>
+              {MONTHS.map((m, mi) => <th key={m} onClick={() => setExpandedMonth(expandedMonth === `${viewYear}-${mi}` ? null : `${viewYear}-${mi}`)}
+                style={{ padding: "7px 8px", textAlign: "center", color: expandedMonth === `${viewYear}-${mi}` ? B : T4, fontSize: 9, textTransform: "uppercase", borderBottom: `2px solid ${BD}`, minWidth: 60, cursor: "pointer", userSelect: "none" }}>
+                {m} {expandedMonth === `${viewYear}-${mi}` ? "▾" : "▸"}
+              </th>)}
+              <th style={{ padding: "7px 8px", textAlign: "center", color: T4, fontSize: 9, textTransform: "uppercase", borderBottom: `2px solid ${BD}`, minWidth: 60 }}>Anual</th>
+            </tr>
+          </thead>
+          <tbody>
+            {activeTypes.map(t => {
+              const monthData = MONTHS.map((_, mi) => calcMonthOccupancy(t.id, viewYear, mi));
+              const annualOcc = monthData.reduce((a, d) => a + d.occDays, 0);
+              const annualTotal = monthData.reduce((a, d) => a + d.totalDays, 0);
+              const annualPct = annualTotal > 0 ? (annualOcc / annualTotal) * 100 : null;
+              return (<tr key={t.id} style={{ borderBottom: `1px solid ${BG3}` }}>
+                <td style={{ padding: "8px 10px", color: T1, fontWeight: 600 }}>{t.name}</td>
+                {monthData.map((d, mi) => (
+                  <td key={mi} style={{ padding: "8px 6px", textAlign: "center", background: pctBg(d.pct), cursor: "pointer" }}
+                    onClick={() => setExpandedMonth(expandedMonth === `${viewYear}-${mi}` ? null : `${viewYear}-${mi}`)}>
+                    {d.pct !== null ? <span style={{ color: pctColor(d.pct), fontWeight: 700 }}>{d.pct.toFixed(0)}%</span> : <span style={{ color: T4 }}>—</span>}
+                  </td>
+                ))}
+                <td style={{ padding: "8px 6px", textAlign: "center", background: pctBg(annualPct), fontWeight: 800 }}>
+                  {annualPct !== null ? <span style={{ color: pctColor(annualPct) }}>{annualPct.toFixed(0)}%</span> : <span style={{ color: T4 }}>—</span>}
+                </td>
+              </tr>);
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Panel de desglose diario del mes expandido */}
+      {expandedMonth && (() => {
+        const [ey, emi] = expandedMonth.split("-").map(Number);
+        const daysInMonth = new Date(ey, emi + 1, 0).getDate();
+        return (<div style={{ background: BG2, border: `1px solid ${B}44`, borderRadius: 10, padding: 14, marginBottom: 14 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <div style={{ fontWeight: 800, color: B, fontSize: 13 }}>
+              {MONTHS[emi]} {ey} — Detalle día a día
+            </div>
+            <Btn label="✕ Cerrar" variant="ghost" small onClick={() => setExpandedMonth(null)} />
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ borderCollapse: "collapse", fontSize: 9 }}>
+              <thead>
+                <tr style={{ background: BG3 }}>
+                  <th style={{ padding: "5px 8px", textAlign: "left", color: T4, textTransform: "uppercase", borderBottom: `2px solid ${BD}`, position: "sticky", left: 0, background: BG3, zIndex: 1, minWidth: 110 }}>Tipo</th>
+                  {Array.from({ length: daysInMonth }, (_, i) => i + 1).map(d => (
+                    <th key={d} style={{ padding: "5px 4px", textAlign: "center", color: T4, borderBottom: `2px solid ${BD}`, minWidth: 32, fontWeight: 400 }}>{d}</th>
+                  ))}
+                  <th style={{ padding: "5px 6px", textAlign: "center", color: T4, textTransform: "uppercase", borderBottom: `2px solid ${BD}`, minWidth: 50 }}>Mes%</th>
+                </tr>
+              </thead>
+              <tbody>
+                {activeTypes.map(t => {
+                  const daily = calcDailyOccupancy(t.id, ey, emi);
+                  const totalOcc = daily.reduce((a, d) => a + d.occRooms, 0);
+                  const totalAvail = daily.reduce((a, d) => a + d.totalRooms, 0);
+                  const monthPct = totalAvail > 0 ? (totalOcc / totalAvail) * 100 : null;
+                  return (<tr key={t.id} style={{ borderBottom: `1px solid ${BG3}` }}>
+                    <td style={{ padding: "5px 8px", color: T1, fontWeight: 600, position: "sticky", left: 0, background: BG2, zIndex: 1 }}>{t.name}</td>
+                    {daily.map(d => (
+                      <td key={d.day} style={{ padding: "4px 2px", textAlign: "center", background: pctBg(d.pct), borderLeft: `1px solid ${BG3}` }}>
+                        <span style={{ color: pctColor(d.pct), fontWeight: d.pct > 0 ? 700 : 400, fontSize: 9 }}>
+                          {d.pct !== null && d.pct > 0 ? `${d.pct.toFixed(0)}%` : d.totalRooms > 0 ? "·" : "—"}
+                        </span>
+                      </td>
+                    ))}
+                    <td style={{ padding: "4px 6px", textAlign: "center", background: pctBg(monthPct), fontWeight: 800 }}>
+                      {monthPct !== null ? <span style={{ color: pctColor(monthPct) }}>{monthPct.toFixed(0)}%</span> : <span style={{ color: T4 }}>—</span>}
+                    </td>
+                  </tr>);
+                })}
+              </tbody>
+            </table>
+          </div>
+          {/* Detalle de reservaciones del mes */}
+          {(() => {
+            const monthStr = `${ey}-${String(emi + 1).padStart(2,"0")}`;
+            const monthRes = reservations.filter(r => r.checkIn?.startsWith(monthStr) && ["Confirmed","confirmed"].includes(r.status));
+            if (monthRes.length === 0) return null;
+            return (<div style={{ marginTop: 12 }}>
+              <div style={{ fontSize: 9, color: T4, textTransform: "uppercase", marginBottom: 6, fontWeight: 700 }}>Reservaciones del mes ({monthRes.length})</div>
+              {monthRes.map(r => (<div key={r.id} style={{ display: "flex", gap: 10, padding: "3px 0", borderBottom: `1px solid ${BG3}`, fontSize: 10 }}>
+                <span style={{ color: T4, minWidth: 100 }}>{r.checkIn} → {r.checkOut}</span>
+                <span style={{ color: T2, fontWeight: 600 }}>{r.clientName}</span>
+                <span style={{ color: T4 }}>{r.unitName}</span>
+                <span style={{ color: P }}>{r.nights}n · {fP(r.pointsUsed)} pts</span>
+              </div>))}
+            </div>);
+          })()}
+        </div>);
+      })()}
+    </div>)}
   </div>);
 }
 // ── CONFIG ───────────────────────────────────────────────────────────────────
@@ -4781,7 +5039,7 @@ export default function App() {
         {tab === "cashier" && <CashierView clients={clients} payments={payments} setPayments={setPayments} setClients={setClients} pp={pp} pms={pms} cu={cu} users={users} cr={cr} condonations={condonations} pendingPayments={pendingPayments} setPendingPayments={setPendingPayments} promises={promises} setPromises={setPromises} fxRate={fxRate} setFxRate={setFxRate} preselClientId={preselClient} onClearPresel={() => setPreselClient(null)} onSavePayment={savePayment} onSavePending={savePendingPayment} onRejectPending={rejectPendingPayment} onSaveFxRate={saveFxRate} promiseToValidate={promiseToValidate} onClearPromiseToValidate={() => setPromiseToValidate(null)} onPromiseFulfilled={markPromiseFulfilled} />}
         {tab === "res" && <ReservationsView clients={clients} reservations={reservations} setReservations={setReservations} units={units} setUnits={setUnits} uts={uts} cu={cu} rc={rc} payments={payments} condonations={condonations} users={users} preselClientId={preselResClient} onClearPresel={() => setPreselResClient(null)} onSaveReservation={saveReservation} onCancelReservation={cancelReservation} />}
         {tab === "col" && <CollectionsView clients={clients} payments={payments} pp={pp} promises={promises} setPromises={setPromises} cu={cu} fxRate={fxRate} onSavePromise={savePromise} onUpdatePromise={updatePromiseStatus} condonations={condonations} />}
-        {tab === "reports" && <ReportsView clients={clients} reservations={reservations} payments={payments} pp={pp} users={users} role={cu.role} courtesies={courtesies} rc={rc} condonations={condonations} />}
+        {tab === "reports" && <ReportsView clients={clients} reservations={reservations} payments={payments} pp={pp} users={users} role={cu.role} courtesies={courtesies} rc={rc} condonations={condonations} units={units} uts={uts} />}
         {tab === "cobranza" && <CobranzaReportView payments={payments} pointSales={pointSales} pms={pms} users={users} cr={cr} cu={cu} />}
         {tab === "config" && <ConfigView seasonOrder={seasonOrder} setSeasonOrder={setSeasonOrder} uts={uts} setUts={setUts} units={units} setUnits={setUnits} pp={pp} setPp={setPp} onSaveUnit={saveUnit} onSaveUnitType={saveUnitType} onRemoveUnitType={removeUnitType} onSavePricePerPoint={savePricePerPoint} pointPrices={pointPrices} savePointPrice={savePointPrice} saveUnitAvailability={saveUnitAvailability} removeUnitAvailability={removeUnitAvailability} saveSeasonRange={saveSeasonRange} removeSeasonRange={removeSeasonRange} cu={cu} />}
         {tab === "pmethods" && <PayMethodsView pms={pms} setPms={setPms} onSavePm={savePaymentMethod} />}
