@@ -840,7 +840,7 @@ function autoCleanup(pending, promises, setPending, setPromises) {
   const expired = pending.filter(p => { const d = new Date(p.submittedAt); return d < new Date(now.getFullYear(), now.getMonth(), now.getDate()); });
   if (expired.length > 0) setTimeout(() => setPending(ps => ps.filter(p => !expired.find(e => e.id === p.id))), 0);
   // Promesas de meses pasados sin cumplir: eliminar
-  const expiredProm = promises.filter(p => p.status === "Pendiente" && p.promiseDate && p.promiseDate.slice(0, 7) < TOM);
+  const expiredProm = promises.filter(p => (p.status === "pending" || p.status === "Pendiente") && p.promiseDate && p.promiseDate.slice(0, 7) < TOM);
   if (expiredProm.length > 0) setTimeout(() => setPromises(ps => ps.filter(p => !expiredProm.find(e => e.id === p.id))), 0);
 }
 // Gestor de cobranza envía propuesta; cajero valida o elimina
@@ -1073,7 +1073,7 @@ function CashierView({ clients, payments, setPayments, setClients, pp, pms, cu, 
       if (pp2.ptype === "moratorios") return c;
       return c;
     }));
-    setPromises(prs => prs.map(pr => pr.clientId === pp2.clientId && pr.status === "Pendiente" && pr.promiseDate && pr.promiseDate.slice(0, 7) >= TOM ? { ...pr, status: "Cumplida", fulfilledDate: payment.date } : pr));
+    setPromises(prs => prs.map(pr => pr.clientId === pp2.clientId && (pr.status === "pending" || pr.status === "Pendiente") && pr.promiseDate && pr.promiseDate.slice(0, 7) >= TOM ? { ...pr, status: "fulfilled", fulfilledDate: payment.date } : pr));
     setPendingPayments(ps => ps.filter(p => p.id !== id));
   };
   const rejectPending = id => {
@@ -1709,8 +1709,8 @@ function CollectionsView({ clients, payments, pp, promises, setPromises, cu, fxR
   const collM = payments.filter(p => p.date && p.date.slice(0, 7) === TOM).reduce((a, p) => a + p.amount, 0);
   const collT = payments.filter(p => p.date === TOD).reduce((a, p) => a + p.amount, 0);
   const myProm = isAdmin ? promises : promises.filter(p => p.gestorUsername === cu.username);
-  const promT = myProm.filter(p => p.promiseDate === TOD && p.status === "Pendiente");
-  const promM = myProm.filter(p => p.promiseDate && p.promiseDate.slice(0, 7) === TOM && p.status === "Pendiente");
+  const promT = myProm.filter(p => p.promiseDate === TOD && (p.status === "pending" || p.status === "Pendiente"));
+  const promM = myProm.filter(p => p.promiseDate && p.promiseDate.slice(0, 7) === TOM && (p.status === "pending" || p.status === "Pendiente"));
   const relP = isAdmin ? payments.filter(p => p.date && p.date.slice(0, 7) === TOM) : payments.filter(p => p.date && p.date.slice(0, 7) === TOM && p.processedBy === cu.username);
   const costM = relP.reduce((a, p) => a + p.amount * (p.costPct || 0) / 100 + (p.agentCommission || 0), 0);
   const revM = relP.reduce((a, p) => a + p.amount, 0);
@@ -1729,7 +1729,7 @@ function CollectionsView({ clients, payments, pp, promises, setPromises, cu, fxR
   const addProm = () => {
     if (!pMod || !pAmt || !pDate) return;
     if (pDescuentoExcede) return;
-    const newProm = { id: Date.now(), clientId: pMod.id, clientName: pMod.name, contractNo: pMod.contractNo, promiseDate: pDate, amount: pAmtN, note: pNote, status: "Pendiente", gestorUsername: cu.username, gestorName: cu.name, createdAt: TOD };
+    const newProm = { id: Date.now(), clientId: pMod.id, clientName: pMod.name, contractNo: pMod.contractNo, promiseDate: pDate, amount: pAmtN, note: pNote, status: "pending", gestorUsername: cu.username, gestorName: cu.name, createdAt: TOD };
     setPromises(ps => [...ps, newProm]);
     // Guardar en Supabase
     if (onSavePromise) onSavePromise(newProm).catch(console.error);
@@ -1817,11 +1817,11 @@ function CollectionsView({ clients, payments, pp, promises, setPromises, cu, fxR
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
             <span style={{ color: Y, fontWeight: 700 }}>{f$(p.amount)}</span>
             <Btn label="✓" variant="success" small onClick={() => {
-              setPromises(ps => ps.map(x => x.id === p.id ? { ...x, status: "Cumplida" } : x));
+              setPromises(ps => ps.map(x => x.id === p.id ? { ...x, status: "fulfilled" } : x));
               if (onUpdatePromise) onUpdatePromise(p.id, "Cumplida");
             }} />
             <Btn label="✗" variant="danger" small onClick={() => {
-              setPromises(ps => ps.map(x => x.id === p.id ? { ...x, status: "Incumplida" } : x));
+              setPromises(ps => ps.map(x => x.id === p.id ? { ...x, status: "expired" } : x));
               if (onUpdatePromise) onUpdatePromise(p.id, "Incumplida");
             }} />
           </div>
@@ -1838,11 +1838,11 @@ function CollectionsView({ clients, payments, pp, promises, setPromises, cu, fxR
           <td style={tS()}>{p.createdAt}</td>
           <td style={td()}><Bdg l={p.status} /></td>
           <td style={tFl()}>
-            {p.status === "Pendiente" && <><Btn label="✓" variant="success" small onClick={() => {
-              setPromises(ps => ps.map(x => x.id === p.id ? { ...x, status: "Cumplida" } : x));
+            {(p.status === "pending" || p.status === "Pendiente") && <><Btn label="✓" variant="success" small onClick={() => {
+              setPromises(ps => ps.map(x => x.id === p.id ? { ...x, status: "fulfilled" } : x));
               if (onUpdatePromise) onUpdatePromise(p.id, "Cumplida");
             }} /><Btn label="✗" variant="danger" small onClick={() => {
-              setPromises(ps => ps.map(x => x.id === p.id ? { ...x, status: "Incumplida" } : x));
+              setPromises(ps => ps.map(x => x.id === p.id ? { ...x, status: "expired" } : x));
               if (onUpdatePromise) onUpdatePromise(p.id, "Incumplida");
             }} /></>}
           </td>
@@ -3075,7 +3075,9 @@ function TeamView({ users, setUsers, clients, setClients, payments, reservations
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
         <div style={{ gridColumn: "1/-1" }}><Inp label="Nombre completo" value={form.name || ""} onChange={setF("name")} /></div>
         <Inp label="Usuario" value={form.username || ""} onChange={setF("username")} />
-        <Inp label="Contraseña" value={form.password || ""} onChange={setF("password")} />
+        {modal === "new" && <div style={{ gridColumn: "1/-1", background: Y+"15", border: `1px solid ${Y}44`, borderRadius:6, padding:"8px 10px", fontSize:10, color:T2 }}>
+          ⚠️ Después de crear el usuario, debes crearlo también en Supabase Auth → Authentication → Users → Add user con email <b>{(form.username||"username")}@pointsuite.app</b> y password inicial <b>admin</b>.
+        </div>}
         {modal === "new" && isSuperAdmin && <div style={{ gridColumn: "1/-1" }}>
           <Inp label="Rol" value={form.role || "gestor"} onChange={setF("role")} opts={[{ v: "gestor", l: "Gestor" }, { v: "cajero", l: "Cajero" }, { v: "admin", l: "Admin" }]} />
         </div>}
@@ -4747,7 +4749,10 @@ export default function App() {
   const saveUser = async (u) => {
     try {
       if (!u.id || u.id > 1000000000) {
-        await insertUser(u);
+        // Nuevo usuario: insertar en tabla users
+        const newUser = await insertUser(u);
+        // Advertir que se necesita crear cuenta en Supabase Auth manualmente
+        alert(`Usuario "${u.username}" creado en el sistema.\n\n⚠️ IMPORTANTE: Para que pueda iniciar sesión debes crear su cuenta en Supabase Auth:\n1. Ve a Supabase → Authentication → Users → Add user\n2. Email: ${u.username}@pointsuite.app\n3. Password temporal: admin\n4. Marca "Auto Confirm"\n\nLuego actualiza el auth_id en la tabla users.`);
       } else {
         await updateUser(u.id, u);
       }
