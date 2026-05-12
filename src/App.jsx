@@ -319,48 +319,42 @@ function SearchBox({ clients, onSelect, selectedId }) {
   </div>);
 }
 // ── LOGIN ───────────────────────────────────────────────────────────────────
-function Login({ onLogin, users }) {
-  const [u, setU] = useState(""),
-    [pw, setPw] = useState(""),
-    [err, setErr] = useState(""),
-    [loading, setLoading] = useState(false);
+function Login({ onLogin }) {
+  const [u, setU] = useState(""), [pw, setPw] = useState(""),
+    [err, setErr] = useState(""), [loading, setLoading] = useState(false);
 
   const doLogin = async () => {
     if (!u || !pw) return;
-    setLoading(true);
-    setErr("");
+    setLoading(true); setErr("");
     try {
-      // Buscar usuario en Supabase
-      const { data, error } = await supabase
+      // 1. Autenticar con Supabase Auth usando email ficticio
+      const email = u.trim().toLowerCase() + "@pointsuite.app";
+      const { data: authData, error: authErr } = await supabase.auth.signInWithPassword({ email, password: pw });
+      if (authErr || !authData?.user) {
+        setErr("Usuario o contraseña incorrectos");
+        setLoading(false); return;
+      }
+      // 2. Obtener datos del usuario de nuestra tabla
+      const { data: userData, error: userErr } = await supabase
         .from('users')
-        .select('*')
-        .eq('username', u.trim())
+        .select('id, username, full_name, role, color_hex, monthly_salary, social_cost')
+        .eq('auth_id', authData.user.id)
         .eq('is_active', true)
         .single();
-
-      if (error || !data) {
-        setErr("Usuario no encontrado");
-        setLoading(false);
-        return;
+      if (userErr || !userData) {
+        await supabase.auth.signOut();
+        setErr("Usuario no activo en el sistema");
+        setLoading(false); return;
       }
-
-      // Por ahora verificamos contra los usuarios hardcoded como respaldo
-      // Cuando tengamos bcrypt en el servidor esto cambiará
-      const localUser = users.find(x => x.username === u.trim() && x.password === pw);
-      if (!localUser) {
-        setErr("Contraseña incorrecta");
-        setLoading(false);
-        return;
-      }
-
-      // Login exitoso — usar datos de Supabase
       onLogin({
-        id: data.id,
-        username: data.username,
-        name: data.full_name,
-        role: data.role,
-        color: data.color_hex,
-        salary: data.monthly_salary,
+        id: userData.id,
+        username: userData.username,
+        name: userData.full_name,
+        role: userData.role,
+        color: userData.color_hex,
+        salary: userData.monthly_salary,
+        socialCost: userData.social_cost,
+        authId: authData.user.id,
       });
     } catch (e) {
       setErr("Error de conexión");
@@ -391,9 +385,58 @@ function Login({ onLogin, users }) {
             {loading ? "Verificando..." : "Entrar →"}
           </button>
         </div>
-
-      </div></div>
+      </div>
+    </div>
   );
+}
+
+// ── CAMBIO DE CONTRASEÑA ─────────────────────────────────────────────────────
+function ChangePasswordModal({ cu, onClose }) {
+  const isSuperAdmin = cu.role === "superadmin";
+  const [current, setCurrent] = useState("");
+  const [newPw, setNewPw] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [err, setErr] = useState("");
+  const [ok, setOk] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  const valid = newPw.length >= 6 && newPw === confirm;
+
+  const doChange = async () => {
+    if (!valid) return;
+    setLoading(true); setErr("");
+    try {
+      // Verificar contraseña actual re-autenticando
+      const email = cu.username + "@pointsuite.app";
+      const { error: verifyErr } = await supabase.auth.signInWithPassword({ email, password: current });
+      if (verifyErr) { setErr("La contraseña actual es incorrecta"); setLoading(false); return; }
+      // Cambiar contraseña
+      const { error: updateErr } = await supabase.auth.updateUser({ password: newPw });
+      if (updateErr) { setErr("Error al cambiar: " + updateErr.message); setLoading(false); return; }
+      setOk(true);
+    } catch (e) { setErr("Error de conexión"); }
+    setLoading(false);
+  };
+
+  return (<Modal title="Cambiar Contraseña" onClose={onClose}>
+    {ok ? (<div style={{ textAlign: "center", padding: "20px 0" }}>
+      <div style={{ fontSize: 32, marginBottom: 10 }}>✓</div>
+      <div style={{ color: G, fontWeight: 700, fontSize: 14 }}>Contraseña cambiada exitosamente</div>
+      <div style={{ color: T4, fontSize: 11, marginTop: 6 }}>La nueva contraseña está activa.</div>
+      <div style={{ marginTop: 16 }}><Btn label="Cerrar" onClick={onClose} /></div>
+    </div>) : (<div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      <Inp label="Contraseña actual" type="password" value={current} onChange={setCurrent} />
+      <Inp label="Nueva contraseña (mínimo 6 caracteres)" type="password" value={newPw} onChange={setNewPw} />
+      <Inp label="Confirmar nueva contraseña" type="password" value={confirm} onChange={setConfirm} />
+      {confirm && newPw !== confirm && <div style={{ color: R, fontSize: 10 }}>⛔ Las contraseñas no coinciden</div>}
+      {newPw && newPw.length < 6 && <div style={{ color: R, fontSize: 10 }}>⛔ Mínimo 6 caracteres</div>}
+      {err && <div style={{ color: R, fontSize: 11, fontWeight: 700 }}>{err}</div>}
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 6 }}>
+        <Btn label="Cancelar" variant="ghost" onClick={onClose} />
+        <Btn label={loading ? "Cambiando..." : "Cambiar Contraseña"} variant="success" disabled={!valid || !current || loading} onClick={doChange} />
+      </div>
+    </div>)}
+  </Modal>);
 }
 // ── CONTACT COMPONENTS ───────────────────────────────────────────────────────
 const PL = ["Esposo", "Esposa", "Celular", "Casa", "Oficina", "Hijo 1", "Hijo 2", "Hijo 3", "Otro"];
@@ -2886,6 +2929,7 @@ function CrEditor({ row, cr, setCr, onSaveCommissionRate }) {
 // ── USERS / TEAM / CONTRACTS / COURTESIES ────────────────────────────────────
 function UsersView({ cu, users, setUsers, rc, onSaveUser }) {
   const [modal, setModal] = useState(null), [form, setForm] = useState({});
+  const [pwModal, setPwModal] = useState(null); // usuario al que cambiar password
   const setF = k => v => setForm(f => ({ ...f, [k]: v }));
   const pD = { superadmin: "Todo", admin: "Config+Reportes+Equipo+Contratos", cajero: "Caja", gestor: "Cobranzas+Reservaciones+Venta Pts" };
   const save = () => {
@@ -2905,7 +2949,6 @@ function UsersView({ cu, users, setUsers, rc, onSaveUser }) {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
         <div style={{ gridColumn: "1/-1" }}><Inp label="Nombre completo" value={form.name || ""} onChange={setF("name")} /></div>
         <Inp label="Usuario" value={form.username || ""} onChange={setF("username")} />
-        <Inp label="Contraseña" value={form.password || ""} onChange={setF("password")} />
         <Inp label="Rol" value={form.role || "gestor"} onChange={setF("role")} opts={Object.keys(RM).map(r => ({ v: r, l: RM[r].l }))} />
         <Inp label="Color (hex)" value={form.color || P} onChange={setF("color")} />
         <Inp label="Sueldo mensual ($)" value={form.salary || 0} onChange={v => setF("salary")(+v)} type="number" />
@@ -2918,7 +2961,8 @@ function UsersView({ cu, users, setUsers, rc, onSaveUser }) {
       <div style={{ background: BG3, borderRadius: 6, padding: "7px 9px", marginTop: 6, fontSize: 10, color: T4 }}><b style={{ color: T1 }}>Permisos: </b>{pD[form.role || "gestor"]}</div>
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}><Btn label="Cancelar" variant="ghost" onClick={() => setModal(null)} /><Btn label="Guardar" onClick={save} /></div>
     </Modal>}
-    <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}><Btn label="+ Nuevo Usuario" onClick={() => { setForm({ username: "", password: "", name: "", role: "gestor", color: P, salary: 0, socialCost: 0 }); setModal("new"); }} /></div>
+    {pwModal && <AdminChangePwModal user={pwModal} onClose={() => setPwModal(null)} />}
+    <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}><Btn label="+ Nuevo Usuario" onClick={() => { setForm({ username: "", name: "", role: "gestor", color: P, salary: 0, socialCost: 0 }); setModal("new"); }} /></div>
     <Tbl cols={["Usuario", "Nombre", "Rol", "Sueldo", "Costo Social", "Costo Total", "Activo", ""]} rows={users.map(u => (<tr key={u.id} style={{ borderBottom: `1px solid ${BG3}`, opacity: u.active === false ? .4 : 1 }}>
       <td style={td()}><div style={{ display: "flex", alignItems: "center", gap: 6 }}><div style={{ width: 20, height: 20, borderRadius: 5, background: (u.color || P) + "20", border: `1px solid ${(u.color || P)}33`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: u.color || P, fontWeight: 700 }}>{(u.username || u.name || "?")[0].toUpperCase()}</div><span style={{ color: T1, fontWeight: 600 }}>{u.username}</span>{u.id === cu.id && <span style={{ fontSize: 8, color: T4, border: `1px solid ${BD}`, borderRadius: 4, padding: "1px 4px" }}>tú</span>}</div></td>
       <td style={tG3()}>{u.name}</td>
@@ -2927,12 +2971,76 @@ function UsersView({ cu, users, setUsers, rc, onSaveUser }) {
       <td style={td({ color: O })}>{f$(u.socialCost || 0)}</td>
       <td style={td({ color: B, fontWeight: 700 })}>{f$((u.salary || 0) + (u.socialCost || 0))}</td>
       <td style={td()}><Bdg l={u.active === false ? "Cancelado" : "Active"} /></td>
-      <td style={tFl()}><Btn label="Editar" variant="ghost" small onClick={() => { setForm({ ...u }); setModal(u); }} />{u.id !== cu.id && <Btn label={u.active === false ? "Activar" : "Baja"} variant={u.active === false ? "success" : "danger"} small onClick={() => {
-        setUsers(us => us.map(x => x.id === u.id ? { ...x, active: !x.active } : x));
-        if (onSaveUser) onSaveUser({ id: u.id, active: !u.active });
-      }} />}</td>
+      <td style={tFl()}>
+        <Btn label="Editar" variant="ghost" small onClick={() => { setForm({ ...u }); setModal(u); }} />
+        <Btn label="🔑" variant="ghost" small title="Cambiar contraseña" onClick={() => setPwModal(u)} />
+        {u.id !== cu.id && <Btn label={u.active === false ? "Activar" : "Baja"} variant={u.active === false ? "success" : "danger"} small onClick={() => {
+          setUsers(us => us.map(x => x.id === u.id ? { ...x, active: !x.active } : x));
+          if (onSaveUser) onSaveUser({ id: u.id, active: !u.active });
+        }} />}
+      </td>
     </tr>))} />
   </div>);
+}
+
+// Modal para que superadmin cambie el password de cualquier usuario
+function AdminChangePwModal({ user, onClose }) {
+  const [newPw, setNewPw] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [err, setErr] = useState("");
+  const [ok, setOk] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const valid = newPw.length >= 6 && newPw === confirm;
+
+  const doChange = async () => {
+    if (!valid) return;
+    setLoading(true); setErr("");
+    try {
+      // Usar la función de admin de Supabase Auth para cambiar password sin conocer el actual
+      // Requiere que el usuario tenga auth_id
+      const { data: userData } = await supabase
+        .from('users')
+        .select('auth_id, username')
+        .eq('id', user.id)
+        .single();
+
+      if (!userData?.auth_id) {
+        setErr("Este usuario no tiene cuenta en Supabase Auth. Contacta al administrador del sistema.");
+        setLoading(false); return;
+      }
+
+      // Llamar a la Edge Function de Supabase para cambiar password como admin
+      const { error } = await supabase.functions.invoke('admin-change-password', {
+        body: { auth_id: userData.auth_id, new_password: newPw }
+      });
+
+      if (error) { setErr("Error: " + error.message); setLoading(false); return; }
+      setOk(true);
+    } catch (e) { setErr("Error de conexión: " + e.message); }
+    setLoading(false);
+  };
+
+  return (<Modal title={`Cambiar contraseña — ${user.name || user.username}`} onClose={onClose}>
+    {ok ? (<div style={{ textAlign: "center", padding: "20px 0" }}>
+      <div style={{ fontSize: 32, marginBottom: 10 }}>✓</div>
+      <div style={{ color: G, fontWeight: 700, fontSize: 14 }}>Contraseña cambiada exitosamente</div>
+      <div style={{ color: T4, fontSize: 11, marginTop: 6 }}>La nueva contraseña está activa para {user.username}.</div>
+      <div style={{ marginTop: 16 }}><Btn label="Cerrar" onClick={onClose} /></div>
+    </div>) : (<div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ background: Y + "15", border: `1px solid ${Y}44`, borderRadius: 7, padding: "8px 12px", fontSize: 10, color: T2 }}>
+        Estás cambiando la contraseña de <b style={{ color: T1 }}>{user.name || user.username}</b> ({user.role}). No necesitas conocer la contraseña actual.
+      </div>
+      <Inp label="Nueva contraseña (mínimo 6 caracteres)" type="password" value={newPw} onChange={setNewPw} />
+      <Inp label="Confirmar nueva contraseña" type="password" value={confirm} onChange={setConfirm} />
+      {confirm && newPw !== confirm && <div style={{ color: R, fontSize: 10 }}>⛔ Las contraseñas no coinciden</div>}
+      {newPw && newPw.length < 6 && <div style={{ color: R, fontSize: 10 }}>⛔ Mínimo 6 caracteres</div>}
+      {err && <div style={{ color: R, fontSize: 11, fontWeight: 700 }}>{err}</div>}
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 6 }}>
+        <Btn label="Cancelar" variant="ghost" onClick={onClose} />
+        <Btn label={loading ? "Cambiando..." : "Cambiar Contraseña"} variant="success" disabled={!valid || loading} onClick={doChange} />
+      </div>
+    </div>)}
+  </Modal>);
 }
 function TeamView({ users, setUsers, clients, setClients, payments, reservations, condonations, onAssignGestor, onCancelContract, onSaveUser, cu }) {
   const [ttab, setTtab] = useState("list"), [modal, setModal] = useState(null), [form, setForm] = useState({}), [agt, setAgt] = useState(""), [selC, setSelC] = useState([]);
@@ -4251,6 +4359,7 @@ export default function App() {
   const [preselClient, setPreselClient] = useState(null);
   const [preselResClient, setPreselResClient] = useState(null);
   const [promiseToValidate, setPromiseToValidate] = useState(null);
+  const [showChangePw, setShowChangePw] = useState(false);
   const [loading, setLoading] = useState(false);
   const [dbError, setDbError] = useState(null);
 
@@ -4973,9 +5082,12 @@ export default function App() {
   };
 
   const login = u => { setCu(u); setTab(RT[u.role][0]); };
-  const logout = () => { setCu(null); setTab(null); setClients([]); setPayments([]); };
+  const logout = async () => {
+    await supabase.auth.signOut();
+    setCu(null); setTab(null); setClients([]); setPayments([]);
+  };
 
-  if (!cu) return <Login onLogin={login} users={users} />;
+  if (!cu) return <Login onLogin={login} />;
 
   if (loading) return (
     <div style={{ minHeight: "100vh", background: BG, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 16 }}>
@@ -4992,7 +5104,7 @@ export default function App() {
       <button onClick={loadAll} style={{ background: B, color: "#fff", border: "none", borderRadius: 6, padding: "8px 18px", cursor: "pointer" }}>Reintentar</button>
     </div>
   );
-  if (!cu) return <Login onLogin={login} users={users} />;
+  if (!cu) return <Login onLogin={login} />;
   const allowed = ATABS.filter(t => RT[cu.role].includes(t.id));
   const active = ATABS.find(t => t.id === tab);
   const sc2 = RM[cu.role]?.c || B;
@@ -5013,6 +5125,7 @@ export default function App() {
           <RBdg r={cu.role} />
         </div>
         <button onClick={() => loadAll()} title="Recargar datos desde la base de datos" style={{ background: "transparent", border: `1px solid ${BD}`, color: B, borderRadius: 6, padding: "2px 8px", fontSize: 8, cursor: "pointer", fontFamily: "inherit", marginRight: 5 }}>🔄 Recargar</button>
+        <button onClick={() => setShowChangePw(true)} style={{ background: "transparent", border: `1px solid ${BD}`, color: T4, borderRadius: 6, padding: "2px 8px", fontSize: 8, cursor: "pointer", fontFamily: "inherit", marginRight: 5 }}>🔑 Contraseña</button>
         <button onClick={logout} style={{ background: "transparent", border: `1px solid ${BD}`, color: T4, borderRadius: 6, padding: "2px 8px", fontSize: 8, cursor: "pointer", fontFamily: "inherit" }}>Salir ⇥</button>
       </div>
     </div>
@@ -5054,5 +5167,6 @@ export default function App() {
         {tab === "ps" && <PointSalesView clients={clients} setClients={setClients} payments={payments} setPayments={setPayments} pp={pp} pms={pms} cu={cu} pendingSales={pendingSales} setPendingSales={setPendingSales} onSavePointSale={savePointSale} pointPrices={pointPrices} fxRate={fxRate} />}
       </div>
     </div>
+    {showChangePw && <ChangePasswordModal cu={cu} onClose={() => setShowChangePw(false)} />}
   </div>);
 }
